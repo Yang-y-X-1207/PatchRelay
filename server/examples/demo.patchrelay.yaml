@@ -1,0 +1,23 @@
+server:
+  host: 127.0.0.1
+  port: 8787
+  token: demo-token
+
+repo:
+  path: .
+  base_branch: main
+  state_dir: .patchrelay
+
+worker:
+  default: fake
+  codex_command: codex
+  claude_command: claude
+
+tests:
+  default:
+    command: ["python", "-c", "print('demo tests passed')"]
+
+limits:
+  max_log_bytes: 1048576
+  max_diff_bytes: 5242880
+  task_timeout_seconds: 60
