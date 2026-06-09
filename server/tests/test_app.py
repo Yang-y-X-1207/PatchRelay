@@ -8,6 +8,8 @@ def test_health_returns_version(client: TestClient) -> None:
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
     assert "version" in response.json()
+    assert response.json()["workers"]["codex"]["available"] in {True, False}
+    assert response.json()["workers"]["claude"]["available"] in {True, False}
 
 
 def test_agent_card_is_public(client: TestClient) -> None:

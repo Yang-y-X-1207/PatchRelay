@@ -18,7 +18,7 @@ OpenClaw Gateway
   -> Fake Worker first, then Codex / Claude Code adapters
 ```
 
-The current implementation includes a runnable Python Core API, serial task queue, Git worktree isolation, configurable test profiles, a fake worker demo path, and command-line adapters for Codex and Claude Code. Follow-up work will continue improving real worker operation, approval, persistence, and delivery workflows.
+The current implementation includes a runnable Python Core API, SQLite task persistence, serial task queue, Git worktree isolation, configurable test profiles, a fake worker demo path, and command-line adapters for Codex and Claude Code. Follow-up work will continue improving real worker operation, approval, and delivery workflows.
 
 ## Repository Layout
 

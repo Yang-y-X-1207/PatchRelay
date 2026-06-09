@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import shutil
 import subprocess
 import time
 from dataclasses import dataclass
@@ -145,6 +146,16 @@ class WorkerRegistry:
 
 def command_to_argv(command: str | list[str]) -> list[str]:
     return [command] if isinstance(command, str) else command
+
+
+def worker_command_status(command: str | list[str]) -> dict[str, str | bool]:
+    executable = command_to_argv(command)[0]
+    resolved = shutil.which(executable)
+    return {
+        "configuredCommand": " ".join(command_to_argv(command)),
+        "available": resolved is not None,
+        "path": resolved or "",
+    }
 
 
 def terminate_process_tree(pid: int) -> None:
