@@ -51,6 +51,7 @@ def test_submit_and_complete_fake_task(client: TestClient, auth_headers: dict[st
     assert "patchrelay.diff" in payload["artifacts"]
     assert "patchrelay.tests" in payload["artifacts"]
     assert "patchrelay.log" in payload["artifacts"]
+    assert "patchrelay.worker" in payload["artifacts"]
     assert payload["branch"].startswith("patchrelay/")
     assert payload["worktreePath"]
 
@@ -77,7 +78,7 @@ def test_fake_worker_can_fail(client: TestClient, auth_headers: dict[str, str]) 
 
     payload = wait_for_status(client, auth_headers, task_id, "failed")
 
-    assert payload["error"] == "Fake worker failure requested by instruction."
+    assert payload["error"] == "Worker 'fake' failed with exit code 1."
 
 
 def test_can_cancel_queued_task(client: TestClient, auth_headers: dict[str, str]) -> None:

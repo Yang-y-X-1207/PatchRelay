@@ -7,7 +7,7 @@ import uuid
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -15,9 +15,7 @@ from patchrelay.artifacts import build_summary_content, clean_diff, clean_log
 from patchrelay.config import Settings
 from patchrelay.git_workspace import GitWorkspaceManager, Workspace
 from patchrelay.test_runner import TestRunner, TestRunResult
-
-
-WorkerName = Literal["auto", "codex", "claude", "fake"]
+from patchrelay.workers import WorkerName, WorkerRegistry, WorkerResult
 
 
 class TaskStatus(StrEnum):
@@ -118,6 +116,7 @@ class TaskService:
             settings.repo.base_branch,
         )
         self._test_runner = TestRunner(settings.limits.task_timeout_seconds)
+        self._worker_registry = WorkerRegistry(settings)
 
     def ensure_started(self) -> None:
         if self._worker_loop is None or self._worker_loop.done():
@@ -198,7 +197,7 @@ class TaskService:
 
         workspace = await asyncio.to_thread(self._workspace_manager.create, task_id)
         await self._record_workspace(task_id, workspace)
-        await self._run_fake_worker(task_id, workspace.worktree_path)
+        worker_result = await self._run_worker(task_id, workspace.worktree_path)
         test_result = await self._run_tests(task_id, workspace.worktree_path)
         changed_files, diff_text = await self._collect_git_results(task_id, workspace.worktree_path)
 
@@ -206,10 +205,10 @@ class TaskService:
             record = self._tasks.get(task_id)
             if record is None or record.status == TaskStatus.CANCELED:
                 return
-            if "fail" in record.instruction.lower():
+            if worker_result.failed:
                 record.status = TaskStatus.FAILED
                 record.phase = "failed"
-                record.error = "Fake worker failure requested by instruction."
+                record.error = f"Worker '{worker_result.worker}' failed with exit code {worker_result.exit_code}."
                 record.completed_at = utcnow()
                 record.updated_at = record.completed_at
                 record.logs.append(record.error)
@@ -218,7 +217,8 @@ class TaskService:
                     changed_files=changed_files,
                     diff_text=diff_text,
                     test_result=test_result,
-                    exit_code=1,
+                    worker_result=worker_result,
+                    exit_code=worker_result.exit_code,
                 )
                 return
             record.status = TaskStatus.COMPLETED if test_result.exit_code == 0 else TaskStatus.FAILED
@@ -233,6 +233,7 @@ class TaskService:
                 changed_files=changed_files,
                 diff_text=diff_text,
                 test_result=test_result,
+                worker_result=worker_result,
                 exit_code=test_result.exit_code,
             )
 
@@ -244,29 +245,33 @@ class TaskService:
             record.branch = workspace.branch
             record.base_branch = workspace.base_branch
             record.worktree_path = workspace.worktree_path
-            record.phase = "fake-worker"
+            record.phase = "worker"
             record.updated_at = utcnow()
             record.logs.append(f"Created worktree at {workspace.worktree_path}.")
 
-    async def _run_fake_worker(self, task_id: str, worktree_path: Path) -> None:
+    async def _run_worker(self, task_id: str, worktree_path: Path) -> WorkerResult:
         async with self._lock:
             record = self._tasks.get(task_id)
             if record is None or record.status == TaskStatus.CANCELED:
-                return
-            record.logs.append("Fake worker started.")
+                return WorkerResult(worker="none", stdout="", stderr="Task was canceled.", exit_code=1)
+            adapter = self._worker_registry.select(record.worker)
+            record.logs.append(f"Worker '{adapter.name}' started.")
             record.updated_at = utcnow()
 
-        await asyncio.sleep(0.05)
-        output_path = worktree_path / "fake-change.txt"
-        await asyncio.to_thread(output_path.write_text, f"PatchRelay fake worker task {task_id}\n", "utf-8")
+        result = await adapter.run(record.instruction, worktree_path)
 
         async with self._lock:
             record = self._tasks.get(task_id)
             if record is None or record.status == TaskStatus.CANCELED:
-                return
+                return result
             record.phase = "tests"
-            record.logs.append("Fake worker wrote fake-change.txt.")
+            if result.stdout:
+                record.logs.append(result.stdout)
+            if result.stderr:
+                record.logs.append(result.stderr)
+            record.logs.append(f"Worker '{result.worker}' exited with code {result.exit_code}.")
             record.updated_at = utcnow()
+        return result
 
     async def _run_tests(self, task_id: str, worktree_path: Path) -> TestRunResult:
         async with self._lock:
@@ -294,6 +299,7 @@ class TaskService:
         changed_files: list[str],
         diff_text: str,
         test_result: TestRunResult,
+        worker_result: WorkerResult,
         exit_code: int,
     ) -> None:
         clean_diff_text, diff_truncated = clean_diff(diff_text, self._settings.limits)
@@ -302,7 +308,7 @@ class TaskService:
             kind="application/json",
             content=build_summary_content(
                 task_id=record.id,
-                worker=record.worker,
+                worker=worker_result.worker,
                 status=record.status,
                 changed_files=changed_files,
                 test_status=test_result.status,
@@ -325,6 +331,15 @@ class TaskService:
                 "timedOut": test_result.timed_out,
                 "stdout": test_result.stdout,
                 "stderr": test_result.stderr,
+            },
+        )
+        record.artifacts["patchrelay.worker"] = Artifact(
+            kind="application/json",
+            content={
+                "worker": worker_result.worker,
+                "stdout": worker_result.stdout,
+                "stderr": worker_result.stderr,
+                "exitCode": worker_result.exit_code,
             },
         )
         record.artifacts["patchrelay.log"] = Artifact(
@@ -361,6 +376,7 @@ class TaskService:
                 changed_files=[],
                 diff_text="",
                 test_result=fallback_result,
+                worker_result=WorkerResult(worker=record.worker, stdout="", stderr=str(exc), exit_code=1),
                 exit_code=1,
             )
 

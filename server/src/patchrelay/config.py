@@ -28,9 +28,9 @@ class RepoConfig(BaseModel):
 
 
 class WorkerConfig(BaseModel):
-    default: Literal["auto", "codex", "claude"] = "auto"
-    codex_command: str = "codex"
-    claude_command: str = "claude"
+    default: Literal["auto", "codex", "claude", "fake"] = "fake"
+    codex_command: str | list[str] = "codex"
+    claude_command: str | list[str] = "claude"
 
 
 class TestProfile(BaseModel):
