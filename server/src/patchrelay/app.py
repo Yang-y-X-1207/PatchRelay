@@ -1,20 +1,40 @@
+from contextlib import asynccontextmanager
 from pathlib import Path
+from collections.abc import AsyncIterator
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 
 from patchrelay import __version__
 from patchrelay.auth import BearerAuthMiddleware
 from patchrelay.config import Settings, load_settings
+from patchrelay.tasks import (
+    SendMessageRequest,
+    TaskCannotCancel,
+    TaskError,
+    TaskNotFound,
+    TaskService,
+)
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or load_settings()
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        app.state.tasks.ensure_started()
+        try:
+            yield
+        finally:
+            await app.state.tasks.shutdown()
+
     app = FastAPI(
         title="PatchRelay",
         version=__version__,
         description="Local A2A-compatible coding execution relay.",
+        lifespan=lifespan,
     )
     app.state.settings = settings
+    app.state.tasks = TaskService(settings)
     app.add_middleware(BearerAuthMiddleware, token=settings.server.token)
 
     @app.get("/health")
@@ -30,7 +50,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "defaultWorker": settings.worker.default,
                 "testProfiles": sorted(settings.tests.keys()),
             },
-            "queue": {"running": 0, "queued": 0},
+            "queue": app.state.tasks.queue_summary(),
             "workers": {
                 "fake": {"available": True},
                 "codex": {"configuredCommand": settings.worker.codex_command},
@@ -60,6 +80,41 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 }
             ],
         }
+
+    @app.post("/message:send")
+    async def send_message(request: SendMessageRequest) -> dict:
+        try:
+            task = await app.state.tasks.submit(request)
+        except TaskError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {
+            "taskId": task.id,
+            "status": task.status,
+            "createdAt": task.created_at.isoformat(),
+        }
+
+    @app.get("/tasks")
+    async def list_tasks() -> dict:
+        tasks = await app.state.tasks.list_tasks()
+        return {"tasks": [task.public_dict() for task in tasks]}
+
+    @app.get("/tasks/{task_id}")
+    async def get_task(task_id: str) -> dict:
+        try:
+            task = await app.state.tasks.get(task_id)
+        except TaskNotFound as exc:
+            raise HTTPException(status_code=404, detail="Task not found.") from exc
+        return task.public_dict()
+
+    @app.post("/tasks/{task_id}:cancel")
+    async def cancel_task(task_id: str) -> dict:
+        try:
+            task = await app.state.tasks.cancel(task_id)
+        except TaskNotFound as exc:
+            raise HTTPException(status_code=404, detail="Task not found.") from exc
+        except TaskCannotCancel as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return task.public_dict()
 
     return app
 
