@@ -18,7 +18,7 @@ OpenClaw Gateway
   -> Fake Worker first, then Codex / Claude Code adapters
 ```
 
-当前已经具备一个可运行的 Python Core API 和 fake worker 演示链路。Codex 和 Claude Code adapter 的命令路径已经接入，后续会继续增强真实 worker 的运行体验、审批和交付能力。
+当前已经具备一个可运行的 Python Core API、SQLite 任务持久化、fake worker 演示链路、Git worktree 隔离和测试 profile 执行能力。Codex 和 Claude Code adapter 的命令路径已经接入，后续会继续增强真实 worker 的运行体验、审批和交付能力。
 
 ## 仓库结构
 

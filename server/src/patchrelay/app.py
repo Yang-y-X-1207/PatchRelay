@@ -17,6 +17,7 @@ from patchrelay.tasks import (
     TaskService,
     format_sse_event,
 )
+from patchrelay.workers import worker_command_status
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -56,8 +57,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "queue": app.state.tasks.queue_summary(),
             "workers": {
                 "fake": {"available": True},
-                "codex": {"configuredCommand": settings.worker.codex_command},
-                "claude": {"configuredCommand": settings.worker.claude_command},
+                "codex": worker_command_status(settings.worker.codex_command),
+                "claude": worker_command_status(settings.worker.claude_command),
             },
         }
 

@@ -96,6 +96,7 @@ def test_fake_worker_can_fail(client: TestClient, auth_headers: dict[str, str]) 
     payload = wait_for_status(client, auth_headers, task_id, "failed")
 
     assert payload["error"] == "Worker 'fake' failed with exit code 1."
+    assert payload["artifacts"]["patchrelay.tests"]["content"]["profile"] == "skipped"
 
 
 def test_can_cancel_queued_task(client: TestClient, auth_headers: dict[str, str]) -> None:
@@ -185,3 +186,49 @@ def test_task_fails_when_test_profile_fails(tmp_path: Path) -> None:
 
     assert payload["artifacts"]["patchrelay.tests"]["content"]["exitCode"] == 7
     assert "failed with exit code 7" in payload["error"]
+
+
+def test_completed_tasks_are_restored_from_sqlite(tmp_path: Path) -> None:
+    repo = init_git_repo(tmp_path / "repo")
+    settings = Settings(
+        server=ServerConfig(token="test-token"),
+        repo=RepoConfig(path=repo, base_branch="main", state_dir=Path(".patchrelay-test")),
+        tests={"default": ConfigTestProfile(command=["python", "-c", "print('tests ok')"])},
+    )
+    headers = {"Authorization": "Bearer test-token"}
+
+    with TestClient(create_app(settings)) as local_client:
+        response = local_client.post("/message:send", json=task_request("persist me"), headers=headers)
+        task_id = response.json()["taskId"]
+        wait_for_status(local_client, headers, task_id, "completed")
+
+    with TestClient(create_app(settings)) as restarted_client:
+        restored = restarted_client.get(f"/tasks/{task_id}", headers=headers)
+
+    payload = restored.json()
+    assert restored.status_code == 200
+    assert payload["status"] == "completed"
+    assert payload["artifacts"]["patchrelay.summary"]["content"]["changedFiles"] == ["fake-change.txt"]
+
+
+def test_incomplete_tasks_are_marked_failed_after_restart(tmp_path: Path) -> None:
+    repo = init_git_repo(tmp_path / "repo")
+    settings = Settings(
+        server=ServerConfig(token="test-token"),
+        repo=RepoConfig(path=repo, base_branch="main", state_dir=Path(".patchrelay-test")),
+        tests={"default": ConfigTestProfile(command=["python", "-c", "print('tests ok')"])},
+    )
+    headers = {"Authorization": "Bearer test-token"}
+
+    with TestClient(create_app(settings)) as local_client:
+        response = local_client.post("/message:send", json=task_request("sleep before restart"), headers=headers)
+        task_id = response.json()["taskId"]
+        wait_for_status(local_client, headers, task_id, "working")
+
+    with TestClient(create_app(settings)) as restarted_client:
+        restored = restarted_client.get(f"/tasks/{task_id}", headers=headers)
+
+    payload = restored.json()
+    assert restored.status_code == 200
+    assert payload["status"] == "failed"
+    assert payload["error"] == "Task was interrupted by PatchRelay restart."

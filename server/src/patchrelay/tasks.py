@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 from patchrelay.artifacts import build_summary_content, clean_diff, clean_log
 from patchrelay.config import Settings
 from patchrelay.git_workspace import GitWorkspaceManager, Workspace
+from patchrelay.task_store import SQLiteTaskStore
 from patchrelay.test_runner import TestRunner, TestRunResult
 from patchrelay.workers import WorkerName, WorkerRegistry, WorkerResult
 
@@ -118,8 +119,13 @@ class TaskService:
         )
         self._test_runner = TestRunner(settings.limits.task_timeout_seconds)
         self._worker_registry = WorkerRegistry(settings)
+        self._store = SQLiteTaskStore(settings.repo.path, settings.repo.state_dir)
+        self._loaded = False
 
     def ensure_started(self) -> None:
+        if not self._loaded:
+            self._load_persisted_tasks()
+            self._loaded = True
         if self._worker_loop is None or self._worker_loop.done():
             self._worker_loop = asyncio.create_task(self._run_queue())
 
@@ -143,6 +149,7 @@ class TaskService:
             record.updated_at = utcnow()
             self._tasks[record.id] = record
             self._cancel_events[record.id] = asyncio.Event()
+            self._save_task(record)
             await self._queue.put(record.id)
 
         return record
@@ -166,10 +173,12 @@ class TaskService:
             if record.status == TaskStatus.QUEUED:
                 self._cancel_events[task_id].set()
                 mark_canceled(record, "Canceled before execution.")
+                self._save_task(record)
                 return record
             if record.status == TaskStatus.WORKING:
                 self._cancel_events[task_id].set()
                 mark_canceled(record, "Cancellation requested.")
+                self._save_task(record)
                 return record
             raise TaskCannotCancel(f"Task {task_id} is already {record.status}.")
 
@@ -177,6 +186,24 @@ class TaskService:
         running = sum(1 for task in self._tasks.values() if task.status == TaskStatus.WORKING)
         queued = sum(1 for task in self._tasks.values() if task.status == TaskStatus.QUEUED)
         return {"running": running, "queued": queued}
+
+    def _load_persisted_tasks(self) -> None:
+        self._store.initialize()
+        for payload in self._store.load_tasks():
+            record = TaskRecord.model_validate(payload)
+            self._tasks[record.id] = record
+            self._cancel_events[record.id] = asyncio.Event()
+            if record.status in {TaskStatus.SUBMITTED, TaskStatus.QUEUED, TaskStatus.WORKING}:
+                record.status = TaskStatus.FAILED
+                record.phase = "failed"
+                record.error = "Task was interrupted by PatchRelay restart."
+                record.completed_at = utcnow()
+                record.updated_at = record.completed_at
+                record.logs.append(record.error)
+                self._save_task(record)
+
+    def _save_task(self, record: TaskRecord) -> None:
+        self._store.save_task(record.model_dump(mode="json"))
 
     async def _run_queue(self) -> None:
         while True:
@@ -198,6 +225,7 @@ class TaskService:
             record.started_at = utcnow()
             record.updated_at = record.started_at
             record.logs.append("Task execution started.")
+            self._save_task(record)
 
         workspace = await asyncio.to_thread(self._workspace_manager.create, task_id)
         await self._record_workspace(task_id, workspace)
@@ -205,28 +233,15 @@ class TaskService:
         if worker_result.canceled:
             await self._finalize_canceled_after_worker(task_id, workspace.worktree_path, worker_result)
             return
+        if worker_result.failed:
+            await self._finalize_failed_after_worker(task_id, workspace.worktree_path, worker_result)
+            return
         test_result = await self._run_tests(task_id, workspace.worktree_path)
         changed_files, diff_text = await self._collect_git_results(task_id, workspace.worktree_path)
 
         async with self._lock:
             record = self._tasks.get(task_id)
             if record is None or record.status == TaskStatus.CANCELED:
-                return
-            if worker_result.failed:
-                record.status = TaskStatus.FAILED
-                record.phase = "failed"
-                record.error = f"Worker '{worker_result.worker}' failed with exit code {worker_result.exit_code}."
-                record.completed_at = utcnow()
-                record.updated_at = record.completed_at
-                record.logs.append(record.error)
-                self._attach_artifacts(
-                    record,
-                    changed_files=changed_files,
-                    diff_text=diff_text,
-                    test_result=test_result,
-                    worker_result=worker_result,
-                    exit_code=worker_result.exit_code,
-                )
                 return
             record.status = TaskStatus.COMPLETED if test_result.exit_code == 0 else TaskStatus.FAILED
             record.phase = "completed"
@@ -243,6 +258,7 @@ class TaskService:
                 worker_result=worker_result,
                 exit_code=test_result.exit_code,
             )
+            self._save_task(record)
 
     async def _record_workspace(self, task_id: str, workspace: Workspace) -> None:
         async with self._lock:
@@ -255,6 +271,7 @@ class TaskService:
             record.phase = "worker"
             record.updated_at = utcnow()
             record.logs.append(f"Created worktree at {workspace.worktree_path}.")
+            self._save_task(record)
 
     async def _run_worker(self, task_id: str, worktree_path: Path) -> WorkerResult:
         async with self._lock:
@@ -265,6 +282,7 @@ class TaskService:
             cancel_event = self._cancel_events[task_id]
             record.logs.append(f"Worker '{adapter.name}' started.")
             record.updated_at = utcnow()
+            self._save_task(record)
 
         result = await adapter.run(record.instruction, worktree_path, cancel_event)
 
@@ -280,6 +298,7 @@ class TaskService:
                 record.logs.append(result.stderr)
             record.logs.append(f"Worker '{result.worker}' exited with code {result.exit_code}.")
             record.updated_at = utcnow()
+            self._save_task(record)
         return result
 
     async def _finalize_canceled_after_worker(
@@ -316,6 +335,43 @@ class TaskService:
                 worker_result=worker_result,
                 exit_code=130,
             )
+            self._save_task(record)
+
+    async def _finalize_failed_after_worker(
+        self,
+        task_id: str,
+        worktree_path: Path,
+        worker_result: WorkerResult,
+    ) -> None:
+        changed_files = await asyncio.to_thread(self._workspace_manager.collect_changed_files, worktree_path)
+        diff_text = await asyncio.to_thread(self._workspace_manager.collect_diff, worktree_path)
+        skipped_tests = TestRunResult(
+            profile="skipped",
+            command=[],
+            stdout="",
+            stderr="Tests skipped because worker failed.",
+            exit_code=1,
+            duration_seconds=0,
+        )
+        async with self._lock:
+            record = self._tasks.get(task_id)
+            if record is None or record.status == TaskStatus.CANCELED:
+                return
+            record.status = TaskStatus.FAILED
+            record.phase = "failed"
+            record.error = f"Worker '{worker_result.worker}' failed with exit code {worker_result.exit_code}."
+            record.completed_at = utcnow()
+            record.updated_at = record.completed_at
+            record.logs.append(record.error)
+            self._attach_artifacts(
+                record,
+                changed_files=changed_files,
+                diff_text=diff_text,
+                test_result=skipped_tests,
+                worker_result=worker_result,
+                exit_code=worker_result.exit_code,
+            )
+            self._save_task(record)
 
     async def _run_tests(self, task_id: str, worktree_path: Path) -> TestRunResult:
         async with self._lock:
@@ -323,6 +379,7 @@ class TaskService:
             profile = self._settings.tests[record.test_profile]
             record.logs.append(f"Running test profile '{record.test_profile}'.")
             record.updated_at = utcnow()
+            self._save_task(record)
         return await asyncio.to_thread(self._test_runner.run, record.test_profile, profile, worktree_path)
 
     async def _collect_git_results(self, task_id: str, worktree_path: Path) -> tuple[list[str], str]:
@@ -332,6 +389,7 @@ class TaskService:
                 record.phase = "artifacts"
                 record.logs.append("Collecting Git artifacts.")
                 record.updated_at = utcnow()
+                self._save_task(record)
         changed_files = await asyncio.to_thread(self._workspace_manager.collect_changed_files, worktree_path)
         diff_text = await asyncio.to_thread(self._workspace_manager.collect_diff, worktree_path)
         return changed_files, diff_text
@@ -423,6 +481,7 @@ class TaskService:
                 worker_result=WorkerResult(worker=record.worker, stdout="", stderr=str(exc), exit_code=1),
                 exit_code=1,
             )
+            self._save_task(record)
 
     async def shutdown(self) -> None:
         if self._worker_loop is not None:
