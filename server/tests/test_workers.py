@@ -5,7 +5,7 @@ import sys
 import psutil
 
 from patchrelay.config import LimitsConfig, Settings, WorkerConfig
-from patchrelay.workers import FakeWorkerAdapter, ProcessWorkerAdapter, WorkerRegistry
+from patchrelay.workers import FakeWorkerAdapter, ProcessWorkerAdapter, WorkerRegistry, resolve_command_path
 
 
 async def test_fake_worker_writes_file(tmp_path: Path) -> None:
@@ -51,7 +51,18 @@ async def test_claude_worker_uses_configured_command(tmp_path: Path) -> None:
     assert result.worker == "claude"
     assert result.exit_code == 0
     assert "claude-out" in result.stdout
-    assert "-p --output-format stream-json --verbose hello" in result.stdout
+    assert (
+        "-p --output-format json --permission-mode acceptEdits --allowedTools Write,Edit,Read "
+        "--disable-slash-commands --no-session-persistence hello"
+    ) in result.stdout
+
+
+def test_resolve_command_path_uses_path_shim(monkeypatch) -> None:
+    monkeypatch.setattr("patchrelay.workers.shutil.which", lambda executable: f"C:/tools/{executable}.CMD")
+
+    command = resolve_command_path(["claude", "-p"])
+
+    assert command == ["C:/tools/claude.CMD", "-p"]
 
 
 async def test_process_worker_can_be_canceled(tmp_path: Path) -> None:
