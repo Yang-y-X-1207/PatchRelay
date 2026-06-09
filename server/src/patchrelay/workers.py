@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Protocol
+
+import psutil
 
 from patchrelay.config import Settings
 
@@ -18,6 +22,7 @@ class WorkerResult:
     stdout: str
     stderr: str
     exit_code: int
+    canceled: bool = False
 
     @property
     def failed(self) -> bool:
@@ -27,15 +32,20 @@ class WorkerResult:
 class WorkerAdapter(Protocol):
     name: str
 
-    async def run(self, instruction: str, cwd: Path) -> WorkerResult:
+    async def run(self, instruction: str, cwd: Path, cancel_event: asyncio.Event) -> WorkerResult:
         pass
 
 
 class FakeWorkerAdapter:
     name = "fake"
 
-    async def run(self, instruction: str, cwd: Path) -> WorkerResult:
-        await asyncio.sleep(0.05)
+    async def run(self, instruction: str, cwd: Path, cancel_event: asyncio.Event) -> WorkerResult:
+        sleep_seconds = 1.0 if "sleep" in instruction.lower() else 0.05
+        try:
+            await asyncio.wait_for(cancel_event.wait(), timeout=sleep_seconds)
+            return WorkerResult(worker=self.name, stdout="", stderr="Worker canceled.", exit_code=130, canceled=True)
+        except asyncio.TimeoutError:
+            pass
         output_path = cwd / "fake-change.txt"
         output_path.write_text(f"PatchRelay fake worker instruction:\n{instruction}\n", encoding="utf-8")
         if "fail" in instruction.lower():
@@ -54,39 +64,52 @@ class ProcessWorkerAdapter:
         self._command = command
         self._timeout_seconds = timeout_seconds
 
-    async def run(self, instruction: str, cwd: Path) -> WorkerResult:
-        return await asyncio.to_thread(self._run_blocking, instruction, cwd)
+    async def run(self, instruction: str, cwd: Path, cancel_event: asyncio.Event) -> WorkerResult:
+        return await asyncio.to_thread(self._run_blocking, instruction, cwd, cancel_event)
 
-    def _run_blocking(self, instruction: str, cwd: Path) -> WorkerResult:
+    def _run_blocking(self, instruction: str, cwd: Path, cancel_event: asyncio.Event) -> WorkerResult:
         command = [*self._command, instruction]
         try:
-            result = subprocess.run(
+            process = subprocess.Popen(
                 command,
                 cwd=str(cwd),
-                check=False,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                timeout=self._timeout_seconds,
             )
-            return WorkerResult(
-                worker=self.name,
-                stdout=result.stdout,
-                stderr=result.stderr,
-                exit_code=result.returncode,
-            )
-        except FileNotFoundError as exc:
-            return WorkerResult(worker=self.name, stdout="", stderr=str(exc), exit_code=127)
-        except subprocess.TimeoutExpired as exc:
-            stdout = exc.stdout if isinstance(exc.stdout, str) else ""
-            stderr = exc.stderr if isinstance(exc.stderr, str) else ""
+            started = time.monotonic()
+            while process.poll() is None:
+                if cancel_event.is_set():
+                    terminate_process_tree(process.pid)
+                    stdout, stderr = process.communicate()
+                    return WorkerResult(
+                        worker=self.name,
+                        stdout=stdout,
+                        stderr=(stderr + "\nWorker canceled.").strip(),
+                        exit_code=130,
+                        canceled=True,
+                    )
+                if time.monotonic() - started > self._timeout_seconds:
+                    terminate_process_tree(process.pid)
+                    stdout, stderr = process.communicate()
+                    return WorkerResult(
+                        worker=self.name,
+                        stdout=stdout,
+                        stderr=(stderr + f"\nWorker timed out after {self._timeout_seconds} seconds.").strip(),
+                        exit_code=124,
+                    )
+                time.sleep(0.05)
+            stdout, stderr = process.communicate()
             return WorkerResult(
                 worker=self.name,
                 stdout=stdout,
-                stderr=f"{stderr}\nWorker timed out after {self._timeout_seconds} seconds.".strip(),
-                exit_code=124,
+                stderr=stderr,
+                exit_code=process.returncode or 0,
             )
+        except FileNotFoundError as exc:
+            return WorkerResult(worker=self.name, stdout="", stderr=str(exc), exit_code=127)
 
 
 class WorkerRegistry:
@@ -122,3 +145,17 @@ class WorkerRegistry:
 
 def command_to_argv(command: str | list[str]) -> list[str]:
     return [command] if isinstance(command, str) else command
+
+
+def terminate_process_tree(pid: int) -> None:
+    with contextlib.suppress(psutil.NoSuchProcess):
+        parent = psutil.Process(pid)
+        children = parent.children(recursive=True)
+        for child in children:
+            with contextlib.suppress(psutil.NoSuchProcess):
+                child.terminate()
+        parent.terminate()
+        gone, alive = psutil.wait_procs([*children, parent], timeout=3)
+        for process in alive:
+            with contextlib.suppress(psutil.NoSuchProcess):
+                process.kill()

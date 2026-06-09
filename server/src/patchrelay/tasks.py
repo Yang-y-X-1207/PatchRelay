@@ -110,6 +110,7 @@ class TaskService:
         self._queue: asyncio.Queue[str] = asyncio.Queue()
         self._lock = asyncio.Lock()
         self._worker_loop: asyncio.Task[None] | None = None
+        self._cancel_events: dict[str, asyncio.Event] = {}
         self._workspace_manager = GitWorkspaceManager(
             settings.repo.path,
             settings.repo.state_dir,
@@ -141,6 +142,7 @@ class TaskService:
             record.phase = "queued"
             record.updated_at = utcnow()
             self._tasks[record.id] = record
+            self._cancel_events[record.id] = asyncio.Event()
             await self._queue.put(record.id)
 
         return record
@@ -162,9 +164,11 @@ class TaskService:
             if record is None:
                 raise TaskNotFound(task_id)
             if record.status == TaskStatus.QUEUED:
+                self._cancel_events[task_id].set()
                 mark_canceled(record, "Canceled before execution.")
                 return record
             if record.status == TaskStatus.WORKING:
+                self._cancel_events[task_id].set()
                 mark_canceled(record, "Cancellation requested.")
                 return record
             raise TaskCannotCancel(f"Task {task_id} is already {record.status}.")
@@ -198,6 +202,9 @@ class TaskService:
         workspace = await asyncio.to_thread(self._workspace_manager.create, task_id)
         await self._record_workspace(task_id, workspace)
         worker_result = await self._run_worker(task_id, workspace.worktree_path)
+        if worker_result.canceled:
+            await self._finalize_canceled_after_worker(task_id, workspace.worktree_path, worker_result)
+            return
         test_result = await self._run_tests(task_id, workspace.worktree_path)
         changed_files, diff_text = await self._collect_git_results(task_id, workspace.worktree_path)
 
@@ -253,18 +260,20 @@ class TaskService:
         async with self._lock:
             record = self._tasks.get(task_id)
             if record is None or record.status == TaskStatus.CANCELED:
-                return WorkerResult(worker="none", stdout="", stderr="Task was canceled.", exit_code=1)
+                return WorkerResult(worker="none", stdout="", stderr="Task was canceled.", exit_code=130, canceled=True)
             adapter = self._worker_registry.select(record.worker)
+            cancel_event = self._cancel_events[task_id]
             record.logs.append(f"Worker '{adapter.name}' started.")
             record.updated_at = utcnow()
 
-        result = await adapter.run(record.instruction, worktree_path)
+        result = await adapter.run(record.instruction, worktree_path, cancel_event)
 
         async with self._lock:
             record = self._tasks.get(task_id)
-            if record is None or record.status == TaskStatus.CANCELED:
+            if record is None:
                 return result
-            record.phase = "tests"
+            if not result.canceled:
+                record.phase = "tests"
             if result.stdout:
                 record.logs.append(result.stdout)
             if result.stderr:
@@ -272,6 +281,41 @@ class TaskService:
             record.logs.append(f"Worker '{result.worker}' exited with code {result.exit_code}.")
             record.updated_at = utcnow()
         return result
+
+    async def _finalize_canceled_after_worker(
+        self,
+        task_id: str,
+        worktree_path: Path,
+        worker_result: WorkerResult,
+    ) -> None:
+        changed_files = await asyncio.to_thread(self._workspace_manager.collect_changed_files, worktree_path)
+        diff_text = await asyncio.to_thread(self._workspace_manager.collect_diff, worktree_path)
+        fallback_result = TestRunResult(
+            profile="canceled",
+            command=[],
+            stdout="",
+            stderr="",
+            exit_code=130,
+            duration_seconds=0,
+        )
+        async with self._lock:
+            record = self._tasks.get(task_id)
+            if record is None:
+                return
+            record.status = TaskStatus.CANCELED
+            record.phase = "canceled"
+            record.error = "Worker canceled."
+            record.completed_at = utcnow()
+            record.updated_at = record.completed_at
+            record.logs.append("Worker canceled.")
+            self._attach_artifacts(
+                record,
+                changed_files=changed_files,
+                diff_text=diff_text,
+                test_result=fallback_result,
+                worker_result=worker_result,
+                exit_code=130,
+            )
 
     async def _run_tests(self, task_id: str, worktree_path: Path) -> TestRunResult:
         async with self._lock:
@@ -382,6 +426,8 @@ class TaskService:
 
     async def shutdown(self) -> None:
         if self._worker_loop is not None:
+            for event in self._cancel_events.values():
+                event.set()
             self._worker_loop.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._worker_loop

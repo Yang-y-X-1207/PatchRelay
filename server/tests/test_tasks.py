@@ -40,6 +40,23 @@ def wait_for_status(
     raise AssertionError(f"Task {task_id} did not reach {statuses}")
 
 
+def wait_for_artifact(
+    client: TestClient,
+    headers: dict[str, str],
+    task_id: str,
+    artifact_name: str,
+) -> dict:
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        response = client.get(f"/tasks/{task_id}", headers=headers)
+        assert response.status_code == 200
+        payload = response.json()
+        if artifact_name in payload["artifacts"]:
+            return payload
+        time.sleep(0.02)
+    raise AssertionError(f"Task {task_id} did not include artifact {artifact_name}")
+
+
 def test_submit_and_complete_fake_task(client: TestClient, auth_headers: dict[str, str]) -> None:
     response = client.post("/message:send", json=task_request("make a fake change"), headers=auth_headers)
 
@@ -91,6 +108,20 @@ def test_can_cancel_queued_task(client: TestClient, auth_headers: dict[str, str]
     assert first.status_code == 200
     assert cancel.status_code == 200
     assert cancel.json()["status"] in {"canceled", "working", "completed"}
+
+
+def test_can_cancel_working_task(client: TestClient, auth_headers: dict[str, str]) -> None:
+    response = client.post("/message:send", json=task_request("sleep before finishing"), headers=auth_headers)
+    task_id = response.json()["taskId"]
+    wait_for_status(client, auth_headers, task_id, "working")
+
+    cancel = client.post(f"/tasks/{task_id}:cancel", headers=auth_headers)
+    wait_for_status(client, auth_headers, task_id, "canceled")
+    payload = wait_for_artifact(client, auth_headers, task_id, "patchrelay.worker")
+
+    assert cancel.status_code == 200
+    assert payload["status"] == "canceled"
+    assert payload["artifacts"]["patchrelay.worker"]["content"]["exitCode"] == 130
 
 
 def test_list_tasks(client: TestClient, auth_headers: dict[str, str]) -> None:
