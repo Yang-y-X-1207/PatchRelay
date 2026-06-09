@@ -1,5 +1,7 @@
 # PatchRelay
 
+Language: English | [简体中文](README.zh-CN.md)
+
 PatchRelay is a local remote-execution relay for agentic coding tasks.
 
 It is designed to run on a developer machine or trusted internal machine, receive coding tasks from OpenClaw or another A2A-compatible client, dispatch those tasks to local coding workers such as Codex or Claude Code, and return task status, logs, diffs, and test results.
