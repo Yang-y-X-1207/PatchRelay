@@ -1,6 +1,9 @@
 import argparse
+import os
 
 import uvicorn
+
+from patchrelay.config import ConfigError, load_settings
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -8,8 +11,9 @@ def build_parser() -> argparse.ArgumentParser:
     subcommands = parser.add_subparsers(dest="command")
 
     serve = subcommands.add_parser("serve", help="Run the PatchRelay server.")
-    serve.add_argument("--host", default="127.0.0.1")
-    serve.add_argument("--port", default=8787, type=int)
+    serve.add_argument("--config", default="patchrelay.yaml")
+    serve.add_argument("--host")
+    serve.add_argument("--port", type=int)
 
     return parser
 
@@ -19,7 +23,14 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.command == "serve":
-        uvicorn.run("patchrelay.app:app", host=args.host, port=args.port)
+        try:
+            settings = load_settings(args.config)
+        except ConfigError as exc:
+            parser.error(str(exc))
+        host = args.host or settings.server.host
+        port = args.port or settings.server.port
+        os.environ["PATCHRELAY_CONFIG"] = args.config
+        uvicorn.run("patchrelay.app:create_app", host=host, port=port, factory=True)
         return
 
     parser.print_help()
