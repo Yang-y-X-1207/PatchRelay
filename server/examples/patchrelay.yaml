@@ -9,7 +9,7 @@ repo:
   state_dir: .patchrelay
 
 worker:
-  default: auto
+  default: fake
   codex_command: codex
   claude_command: claude
 
