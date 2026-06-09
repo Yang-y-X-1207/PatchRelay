@@ -1,0 +1,31 @@
+{
+  "id": "patchrelay",
+  "name": "PatchRelay",
+  "description": "Relay coding tasks from OpenClaw to a local PatchRelay server.",
+  "version": "0.1.0",
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "baseUrl": {
+        "type": "string",
+        "default": "http://127.0.0.1:8787",
+        "description": "PatchRelay server base URL."
+      },
+      "token": {
+        "type": "string",
+        "description": "Bearer token for the PatchRelay server."
+      }
+    },
+    "additionalProperties": false
+  },
+  "activation": {
+    "onStartup": true
+  },
+  "contracts": {
+    "tools": [
+      "patchrelay_submit_task",
+      "patchrelay_get_task",
+      "patchrelay_cancel_task"
+    ]
+  }
+}
