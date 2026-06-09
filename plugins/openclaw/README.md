@@ -22,5 +22,6 @@ Environment variables:
 ```powershell
 npm install
 npm test
-npm run build
+npm run plugin:build
+npm run plugin:validate
 ```
