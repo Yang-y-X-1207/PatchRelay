@@ -1,15 +1,21 @@
 from collections.abc import Generator
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
 from patchrelay.app import create_app
-from patchrelay.config import Settings
+from patchrelay.config import RepoConfig, Settings, TestProfile as ConfigTestProfile
+from helpers import init_git_repo
 
 
 @pytest.fixture
-def settings() -> Settings:
-    return Settings()
+def settings(tmp_path: Path) -> Settings:
+    repo = init_git_repo(tmp_path / "repo")
+    return Settings(
+        repo=RepoConfig(path=repo, base_branch="main", state_dir=Path(".patchrelay-test")),
+        tests={"default": ConfigTestProfile(command=["python", "-c", "print('tests ok')"])},
+    )
 
 
 @pytest.fixture

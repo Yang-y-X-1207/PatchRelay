@@ -24,6 +24,7 @@ class ServerConfig(BaseModel):
 class RepoConfig(BaseModel):
     path: Path = Field(default_factory=lambda: Path.cwd())
     base_branch: str = "main"
+    state_dir: Path = Field(default_factory=lambda: Path(".patchrelay"))
 
 
 class WorkerConfig(BaseModel):

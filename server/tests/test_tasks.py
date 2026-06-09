@@ -1,6 +1,11 @@
 import time
+from pathlib import Path
 
 from fastapi.testclient import TestClient
+
+from patchrelay.app import create_app
+from patchrelay.config import LimitsConfig, RepoConfig, ServerConfig, Settings, TestProfile as ConfigTestProfile
+from helpers import init_git_repo
 
 
 def task_request(instruction: str, worker: str = "auto", test_profile: str = "default") -> dict:
@@ -46,6 +51,8 @@ def test_submit_and_complete_fake_task(client: TestClient, auth_headers: dict[st
     assert "patchrelay.diff" in payload["artifacts"]
     assert "patchrelay.tests" in payload["artifacts"]
     assert "patchrelay.log" in payload["artifacts"]
+    assert payload["branch"].startswith("patchrelay/")
+    assert payload["worktreePath"]
 
 
 def test_submit_rejects_empty_instruction(client: TestClient, auth_headers: dict[str, str]) -> None:
@@ -107,3 +114,42 @@ def test_stream_message_returns_sse_events(client: TestClient, auth_headers: dic
     assert "event: task" in body
     assert "event: done" in body
     assert "completed" in body
+
+
+def test_task_uses_git_worktree_and_real_diff(tmp_path: Path) -> None:
+    repo = init_git_repo(tmp_path / "repo")
+    settings = Settings(
+        server=ServerConfig(token="test-token"),
+        repo=RepoConfig(path=repo, base_branch="main", state_dir=Path(".patchrelay-test")),
+        tests={"default": ConfigTestProfile(command=["python", "-c", "print('tests ok')"])},
+    )
+    headers = {"Authorization": "Bearer test-token"}
+
+    with TestClient(create_app(settings)) as local_client:
+        response = local_client.post("/message:send", json=task_request("write diff"), headers=headers)
+        task_id = response.json()["taskId"]
+        payload = wait_for_status(local_client, headers, task_id, "completed")
+
+    assert payload["branch"].startswith("patchrelay/")
+    assert Path(payload["worktreePath"]).exists()
+    assert payload["artifacts"]["patchrelay.summary"]["content"]["changedFiles"] == ["fake-change.txt"]
+    assert "fake-change.txt" in payload["artifacts"]["patchrelay.diff"]["content"]
+    assert payload["artifacts"]["patchrelay.tests"]["content"]["status"] == "passed"
+
+
+def test_task_fails_when_test_profile_fails(tmp_path: Path) -> None:
+    repo = init_git_repo(tmp_path / "repo")
+    settings = Settings(
+        server=ServerConfig(token="test-token"),
+        repo=RepoConfig(path=repo, base_branch="main", state_dir=Path(".patchrelay-test")),
+        tests={"default": ConfigTestProfile(command=["python", "-c", "import sys; sys.exit(7)"])},
+    )
+    headers = {"Authorization": "Bearer test-token"}
+
+    with TestClient(create_app(settings)) as local_client:
+        response = local_client.post("/message:send", json=task_request("write diff"), headers=headers)
+        task_id = response.json()["taskId"]
+        payload = wait_for_status(local_client, headers, task_id, "failed")
+
+    assert payload["artifacts"]["patchrelay.tests"]["content"]["exitCode"] == 7
+    assert "failed with exit code 7" in payload["error"]
