@@ -94,3 +94,7 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
         return Settings.model_validate(data)
     except ValidationError as exc:
         raise ConfigError(str(exc)) from exc
+
+
+def command_to_display(command: str | list[str]) -> str:
+    return command if isinstance(command, str) else " ".join(command)

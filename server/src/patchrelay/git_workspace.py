@@ -45,6 +45,10 @@ class GitWorkspaceManager:
             base_branch=self.base_branch,
         )
 
+    def validate(self) -> None:
+        self._ensure_repo()
+        self._git(["rev-parse", "--verify", self.base_branch])
+
     def collect_changed_files(self, worktree_path: Path) -> list[str]:
         output = self._git(["status", "--porcelain"], cwd=worktree_path).stdout
         files: list[str] = []
