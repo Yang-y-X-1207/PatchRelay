@@ -18,7 +18,7 @@ OpenClaw Gateway
   -> Fake Worker first, then Codex / Claude Code adapters
 ```
 
-The first implementation milestone focuses on a runnable Python Core API with a fake worker. Real Codex and Claude Code adapters, Git worktree isolation, and full test-profile execution are planned follow-up milestones.
+The current implementation includes a runnable Python Core API, serial task queue, Git worktree isolation, configurable test profiles, a fake worker demo path, and command-line adapters for Codex and Claude Code. Follow-up work will continue improving real worker operation, approval, persistence, and delivery workflows.
 
 ## Repository Layout
 
@@ -35,7 +35,7 @@ The first implementation milestone focuses on a runnable Python Core API with a 
 - Windows is the first supported development environment.
 - Major work starts from `main` on a feature branch.
 - Feature branches are committed locally and merged back to `main`.
-- The project does not push to the remote repository unless explicitly requested.
+- Push behavior follows the current collaboration agreement; during this phase completed feature branches are merged to `main` and pushed after verification.
 - The recommended Python dependency manager is `uv`; the code also supports standard `python -m pip` workflows.
 
 ## Documentation
@@ -78,4 +78,14 @@ Expected result:
 - changed files include `fake-change.txt`
 - test status is `passed`
 
-Demo cleanup is manual for now. Remove `.patchrelay/` and delete any local `patchrelay/*` branches after inspection.
+After inspection, preview cleanup targets:
+
+```powershell
+uv run patchrelay cleanup --config .\patchrelay.yaml
+```
+
+Remove PatchRelay demo worktrees, local `patchrelay/*` branches, and `.patchrelay/` state:
+
+```powershell
+uv run patchrelay cleanup --config .\patchrelay.yaml --force
+```

@@ -10,6 +10,7 @@ from typing import Any
 import httpx
 import uvicorn
 
+from patchrelay.cleanup import CleanupError, cleanup_patchrelay
 from patchrelay.config import ConfigError, Settings, command_to_display, load_settings
 from patchrelay.git_workspace import GitWorkspaceError, GitWorkspaceManager
 
@@ -52,6 +53,11 @@ def build_parser() -> argparse.ArgumentParser:
     doctor = subcommands.add_parser("doctor", help="Check local PatchRelay configuration and tools.")
     doctor.add_argument("--config", default="patchrelay.yaml")
     doctor.add_argument("--json", action="store_true", help="Print raw JSON.")
+
+    cleanup = subcommands.add_parser("cleanup", help="Clean PatchRelay worktrees, branches, and local state.")
+    cleanup.add_argument("--config", default="patchrelay.yaml")
+    cleanup.add_argument("--force", action="store_true", help="Remove cleanup targets. Without this, only preview.")
+    cleanup.add_argument("--json", action="store_true", help="Print raw JSON.")
 
     return parser
 
@@ -113,6 +119,18 @@ def main() -> None:
         result = run_doctor(settings)
         print_json(result) if args.json else print_doctor(result)
         raise SystemExit(0 if result["ok"] else 1)
+
+    if args.command == "cleanup":
+        try:
+            settings = load_settings(args.config)
+            result = cleanup_patchrelay(settings, force=args.force)
+        except (ConfigError, CleanupError) as exc:
+            payload = {"ok": False, "error": str(exc)}
+            print_json(payload) if args.json else print(f"cleanup failed: {exc}")
+            raise SystemExit(1)
+        payload = result.to_dict()
+        print_json(payload) if args.json else print_cleanup(payload)
+        raise SystemExit(0 if payload["ok"] else 1)
 
     parser.print_help()
 
@@ -236,6 +254,20 @@ def print_doctor(result: dict[str, Any]) -> None:
     for check in result["checks"]:
         status = "ok" if check["ok"] else "fail"
         print(f"[{status}] {check['name']}: {check['message']}")
+    print(f"overall: {'ok' if result['ok'] else 'fail'}")
+
+
+def print_cleanup(result: dict[str, Any]) -> None:
+    mode = "removed" if result["force"] else "preview"
+    print(f"cleanup mode: {mode}")
+    print(f"repo: {result['repoPath']}")
+    print(f"state dir: {result['stateDir']}")
+    if not result["actions"]:
+        print("no PatchRelay cleanup targets found")
+        return
+    for action in result["actions"]:
+        suffix = f" - {action['message']}" if action.get("message") else ""
+        print(f"[{action['status']}] {action['kind']}: {action['target']}{suffix}")
     print(f"overall: {'ok' if result['ok'] else 'fail'}")
 
 
