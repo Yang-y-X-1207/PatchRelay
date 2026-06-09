@@ -4,6 +4,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from typing import Any
 
 import httpx
@@ -25,6 +26,21 @@ def build_parser() -> argparse.ArgumentParser:
     tasks = subcommands.add_parser("tasks", help="List tasks from a running PatchRelay server.")
     add_client_args(tasks)
     tasks.add_argument("--json", action="store_true", help="Print raw JSON.")
+
+    submit = subcommands.add_parser("submit", help="Submit a coding task to a running PatchRelay server.")
+    add_client_args(submit)
+    submit.add_argument("instruction", nargs="+", help="Task instruction text.")
+    submit.add_argument("--worker", choices=["auto", "fake", "codex", "claude"], default="auto")
+    submit.add_argument("--test-profile", default="default")
+    submit.add_argument("--wait", action="store_true", help="Wait for completion after submitting.")
+    submit.add_argument("--json", action="store_true", help="Print raw JSON.")
+
+    wait = subcommands.add_parser("wait", help="Wait for a task to finish.")
+    add_client_args(wait)
+    wait.add_argument("task_id")
+    wait.add_argument("--timeout", type=float, default=300)
+    wait.add_argument("--interval", type=float, default=1)
+    wait.add_argument("--json", action="store_true", help="Print raw JSON.")
 
     cancel = subcommands.add_parser("cancel", help="Cancel a queued or running task.")
     add_client_args(cancel)
@@ -65,6 +81,18 @@ def main() -> None:
                 )
         return
 
+    if args.command == "submit":
+        payload = submit_task(args)
+        if args.wait:
+            payload = wait_for_task(args, payload["taskId"])
+        print_json(payload) if args.json else print_task_summary(payload)
+        return
+
+    if args.command == "wait":
+        payload = wait_for_task(args, args.task_id)
+        print_json(payload) if args.json else print_task_summary(payload)
+        return
+
     if args.command == "cancel":
         payload = request_json(args, "POST", f"/tasks/{args.task_id}:cancel")
         if args.json:
@@ -92,15 +120,62 @@ def add_client_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--token", default=os.getenv("PATCHRELAY_TOKEN", "change-me"))
 
 
-def request_json(args: argparse.Namespace, method: str, path: str) -> dict[str, Any]:
+def request_json(
+    args: argparse.Namespace,
+    method: str,
+    path: str,
+    payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     url = f"{args.url.rstrip('/')}{path}"
     headers = {"Authorization": f"Bearer {args.token}"}
     try:
-        response = httpx.request(method, url, headers=headers, timeout=10)
+        response = httpx.request(method, url, headers=headers, json=payload, timeout=10)
         response.raise_for_status()
     except httpx.HTTPError as exc:
         raise SystemExit(f"PatchRelay request failed: {exc}") from exc
     return response.json()
+
+
+def submit_task(args: argparse.Namespace) -> dict[str, Any]:
+    instruction = " ".join(args.instruction).strip()
+    payload = {
+        "message": {
+            "role": "ROLE_USER",
+            "parts": [{"text": instruction}],
+        },
+        "metadata": {
+            "patchrelay": {
+                "worker": args.worker,
+                "testProfile": args.test_profile,
+            }
+        },
+    }
+    return request_json(args, "POST", "/message:send", payload)
+
+
+def wait_for_task(args: argparse.Namespace, task_id: str) -> dict[str, Any]:
+    deadline = time.monotonic() + args.timeout
+    while time.monotonic() < deadline:
+        payload = request_json(args, "GET", f"/tasks/{task_id}")
+        if payload["status"] in {"completed", "failed", "canceled"}:
+            return payload
+        time.sleep(args.interval)
+    raise SystemExit(f"Timed out waiting for task {task_id}")
+
+
+def print_task_summary(payload: dict[str, Any]) -> None:
+    print(f"task: {payload['taskId']}")
+    print(f"status: {payload['status']}")
+    if payload.get("phase"):
+        print(f"phase: {payload['phase']}")
+    if payload.get("branch"):
+        print(f"branch: {payload['branch']}")
+    summary = payload.get("artifacts", {}).get("patchrelay.summary", {}).get("content")
+    if summary:
+        print(f"worker: {summary.get('worker')}")
+        changed_files = summary.get("changedFiles") or []
+        print(f"changed files: {', '.join(changed_files) or '-'}")
+        print(f"test status: {summary.get('testStatus')}")
 
 
 def run_doctor(settings: Settings) -> dict[str, Any]:
