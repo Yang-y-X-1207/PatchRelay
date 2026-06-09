@@ -78,6 +78,22 @@ def test_submit_parser_collects_instruction() -> None:
     assert args.interval == 0.1
 
 
+def test_cleanup_parser_defaults_to_preview() -> None:
+    args = cli.build_parser().parse_args(["cleanup", "--config", "demo.yaml"])
+
+    assert args.command == "cleanup"
+    assert args.config == "demo.yaml"
+    assert args.force is False
+
+
+def test_cleanup_parser_accepts_force_and_json() -> None:
+    args = cli.build_parser().parse_args(["cleanup", "--force", "--json"])
+
+    assert args.command == "cleanup"
+    assert args.force is True
+    assert args.json is True
+
+
 def test_submit_task_sends_a2a_like_payload(monkeypatch: pytest.MonkeyPatch) -> None:
     captured = {}
 

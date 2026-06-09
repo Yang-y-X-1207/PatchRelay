@@ -78,4 +78,14 @@ uv run patchrelay tasks --token demo-token
 - changed files 包含 `fake-change.txt`
 - test status 为 `passed`
 
-当前 demo 需要手动清理。检查完成后，可以删除 `.patchrelay/` 目录，并删除本地 `patchrelay/*` 临时分支。
+检查完成后，先预览将要清理的 PatchRelay 产物：
+
+```powershell
+uv run patchrelay cleanup --config .\patchrelay.yaml
+```
+
+确认无误后，删除 demo worktree、本地 `patchrelay/*` 临时分支和 `.patchrelay/` 状态目录：
+
+```powershell
+uv run patchrelay cleanup --config .\patchrelay.yaml --force
+```
