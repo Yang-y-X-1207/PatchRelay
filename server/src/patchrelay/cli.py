@@ -33,6 +33,8 @@ def build_parser() -> argparse.ArgumentParser:
     submit.add_argument("--worker", choices=["auto", "fake", "codex", "claude"], default="auto")
     submit.add_argument("--test-profile", default="default")
     submit.add_argument("--wait", action="store_true", help="Wait for completion after submitting.")
+    submit.add_argument("--timeout", type=float, default=300)
+    submit.add_argument("--interval", type=float, default=1)
     submit.add_argument("--json", action="store_true", help="Print raw JSON.")
 
     wait = subcommands.add_parser("wait", help="Wait for a task to finish.")

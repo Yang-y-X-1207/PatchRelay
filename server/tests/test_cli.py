@@ -66,12 +66,16 @@ def test_cancel_parser_requires_task_id() -> None:
 
 
 def test_submit_parser_collects_instruction() -> None:
-    args = cli.build_parser().parse_args(["submit", "fix", "the", "bug", "--worker", "fake", "--wait"])
+    args = cli.build_parser().parse_args(
+        ["submit", "fix", "the", "bug", "--worker", "fake", "--wait", "--timeout", "10", "--interval", "0.1"]
+    )
 
     assert args.command == "submit"
     assert args.instruction == ["fix", "the", "bug"]
     assert args.worker == "fake"
     assert args.wait is True
+    assert args.timeout == 10
+    assert args.interval == 0.1
 
 
 def test_submit_task_sends_a2a_like_payload(monkeypatch: pytest.MonkeyPatch) -> None:

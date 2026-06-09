@@ -1,6 +1,7 @@
 .venv/
 server/.venv/
 server/.patchrelay/
+server/patchrelay.yaml
 __pycache__/
 *.py[cod]
 .pytest_cache/
