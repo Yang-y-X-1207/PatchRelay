@@ -62,7 +62,7 @@ class FakeWorkerAdapter:
 class ProcessWorkerAdapter:
     def __init__(self, name: str, command: list[str], timeout_seconds: int) -> None:
         self.name = name
-        self._command = command
+        self._command = resolve_command_path(command)
         self._timeout_seconds = timeout_seconds
 
     async def run(self, instruction: str, cwd: Path, cancel_event: asyncio.Event) -> WorkerResult:
@@ -136,8 +136,13 @@ class WorkerRegistry:
                     *command_to_argv(self._settings.worker.claude_command),
                     "-p",
                     "--output-format",
-                    "stream-json",
-                    "--verbose",
+                    "json",
+                    "--permission-mode",
+                    "acceptEdits",
+                    "--allowedTools",
+                    "Write,Edit,Read",
+                    "--disable-slash-commands",
+                    "--no-session-persistence",
                 ],
                 self._settings.limits.task_timeout_seconds,
             )
@@ -146,6 +151,16 @@ class WorkerRegistry:
 
 def command_to_argv(command: str | list[str]) -> list[str]:
     return [command] if isinstance(command, str) else command
+
+
+def resolve_command_path(command: list[str]) -> list[str]:
+    if not command:
+        return command
+    executable = command[0]
+    resolved = shutil.which(executable)
+    if resolved is None:
+        return command
+    return [resolved, *command[1:]]
 
 
 def worker_command_status(command: str | list[str]) -> dict[str, str | bool]:
