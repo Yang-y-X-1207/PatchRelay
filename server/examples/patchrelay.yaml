@@ -6,6 +6,7 @@ server:
 repo:
   path: .
   base_branch: main
+  state_dir: .patchrelay
 
 worker:
   default: auto

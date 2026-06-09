@@ -1,5 +1,6 @@
 .venv/
 server/.venv/
+server/.patchrelay/
 __pycache__/
 *.py[cod]
 .pytest_cache/
