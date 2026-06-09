@@ -13,3 +13,4 @@ node_modules/
 plugins/openclaw/dist/
 coverage/
 .coverage
+~$*
