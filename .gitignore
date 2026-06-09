@@ -9,5 +9,6 @@ dist/
 build/
 *.egg-info/
 node_modules/
+plugins/openclaw/dist/
 coverage/
 .coverage
