@@ -1,8 +1,10 @@
+import asyncio
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from collections.abc import AsyncIterator
 
 from fastapi import FastAPI, HTTPException
+from starlette.responses import StreamingResponse
 
 from patchrelay import __version__
 from patchrelay.auth import BearerAuthMiddleware
@@ -13,6 +15,7 @@ from patchrelay.tasks import (
     TaskError,
     TaskNotFound,
     TaskService,
+    format_sse_event,
 )
 
 
@@ -92,6 +95,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "status": task.status,
             "createdAt": task.created_at.isoformat(),
         }
+
+    @app.post("/message:stream")
+    async def stream_message(request: SendMessageRequest) -> StreamingResponse:
+        try:
+            task = await app.state.tasks.submit(request)
+        except TaskError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        async def events() -> AsyncIterator[str]:
+            last_status = None
+            while True:
+                current = await app.state.tasks.get(task.id)
+                if current.status != last_status:
+                    yield format_sse_event("task", current.public_dict())
+                    last_status = current.status
+                if current.status in {"completed", "failed", "canceled"}:
+                    yield format_sse_event("done", current.public_dict())
+                    break
+                await asyncio.sleep(0.02)
+
+        return StreamingResponse(events(), media_type="text/event-stream")
 
     @app.get("/tasks")
     async def list_tasks() -> dict:
