@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import uuid
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -9,6 +10,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from patchrelay.artifacts import build_summary_content, clean_diff, clean_log
 from patchrelay.config import Settings
 
 
@@ -163,6 +165,8 @@ class TaskService:
             task_id = await self._queue.get()
             try:
                 await self._run_one(task_id)
+            except Exception as exc:  # pragma: no cover - defensive queue guard
+                await self._mark_worker_exception(task_id, exc)
             finally:
                 self._queue.task_done()
 
@@ -190,22 +194,88 @@ class TaskService:
                 record.completed_at = utcnow()
                 record.updated_at = record.completed_at
                 record.logs.append(record.error)
+                self._attach_fake_artifacts(record, changed_files=[], test_status="not-run", exit_code=1)
                 return
             record.status = TaskStatus.COMPLETED
             record.phase = "completed"
             record.completed_at = utcnow()
             record.updated_at = record.completed_at
             record.logs.append("Fake worker completed.")
-            record.artifacts["patchrelay.summary"] = Artifact(
-                kind="application/json",
-                content={
-                    "taskId": record.id,
-                    "worker": record.worker,
-                    "status": record.status,
-                    "changedFiles": ["fake-change.txt"],
-                    "testStatus": "not-run",
-                },
+            self._attach_fake_artifacts(
+                record,
+                changed_files=["fake-change.txt"],
+                test_status="not-run",
+                exit_code=0,
             )
+
+    def _attach_fake_artifacts(
+        self,
+        record: TaskRecord,
+        *,
+        changed_files: list[str],
+        test_status: str,
+        exit_code: int,
+    ) -> None:
+        diff_text = "\n".join(
+            [
+                "diff --git a/fake-change.txt b/fake-change.txt",
+                "new file mode 100644",
+                "--- /dev/null",
+                "+++ b/fake-change.txt",
+                "@@ -0,0 +1 @@",
+                "+Fake worker output token=fake-token",
+            ]
+        )
+        clean_diff_text, diff_truncated = clean_diff(diff_text, self._settings.limits)
+        clean_log_text, log_truncated = clean_log("\n".join(record.logs), self._settings.limits)
+        record.artifacts["patchrelay.summary"] = Artifact(
+            kind="application/json",
+            content=build_summary_content(
+                task_id=record.id,
+                worker=record.worker,
+                status=record.status,
+                changed_files=changed_files,
+                test_status=test_status,
+                exit_code=exit_code,
+            ),
+        )
+        record.artifacts["patchrelay.diff"] = Artifact(
+            kind="text/x-diff",
+            content=clean_diff_text,
+            truncated=diff_truncated,
+        )
+        record.artifacts["patchrelay.tests"] = Artifact(
+            kind="application/json",
+            content={
+                "profile": record.test_profile,
+                "status": test_status,
+                "exitCode": exit_code,
+                "stdout": "Fake worker did not run tests.",
+                "stderr": "",
+            },
+        )
+        record.artifacts["patchrelay.log"] = Artifact(
+            kind="text/plain",
+            content=clean_log_text,
+            truncated=log_truncated,
+        )
+
+    async def _mark_worker_exception(self, task_id: str, exc: Exception) -> None:
+        async with self._lock:
+            record = self._tasks.get(task_id)
+            if record is None or record.status in {
+                TaskStatus.COMPLETED,
+                TaskStatus.FAILED,
+                TaskStatus.CANCELED,
+            }:
+                return
+            record.status = TaskStatus.FAILED
+            record.phase = "failed"
+            record.error = f"Worker exception: {exc}"
+            record.completed_at = utcnow()
+            record.updated_at = record.completed_at
+            record.logs.append(record.error)
+            self._attach_fake_artifacts(record, changed_files=[], test_status="not-run", exit_code=1)
 
     async def shutdown(self) -> None:
         if self._worker_loop is not None:
@@ -241,3 +311,7 @@ def mark_canceled(record: TaskRecord, message: str) -> None:
     record.completed_at = utcnow()
     record.updated_at = record.completed_at
     record.logs.append(message)
+
+
+def format_sse_event(event: str, payload: dict[str, Any]) -> str:
+    return f"event: {event}\ndata: {json.dumps(payload, default=str, ensure_ascii=False)}\n\n"

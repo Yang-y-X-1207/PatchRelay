@@ -43,6 +43,9 @@ def test_submit_and_complete_fake_task(client: TestClient, auth_headers: dict[st
 
     payload = wait_for_status(client, auth_headers, task_id, "completed")
     assert payload["artifacts"]["patchrelay.summary"]["content"]["changedFiles"] == ["fake-change.txt"]
+    assert "patchrelay.diff" in payload["artifacts"]
+    assert "patchrelay.tests" in payload["artifacts"]
+    assert "patchrelay.log" in payload["artifacts"]
 
 
 def test_submit_rejects_empty_instruction(client: TestClient, auth_headers: dict[str, str]) -> None:
@@ -89,3 +92,18 @@ def test_list_tasks(client: TestClient, auth_headers: dict[str, str]) -> None:
 
     assert response.status_code == 200
     assert len(response.json()["tasks"]) == 1
+
+
+def test_stream_message_returns_sse_events(client: TestClient, auth_headers: dict[str, str]) -> None:
+    with client.stream(
+        "POST",
+        "/message:stream",
+        json=task_request("stream me"),
+        headers=auth_headers,
+    ) as response:
+        body = response.read().decode("utf-8")
+
+    assert response.status_code == 200
+    assert "event: task" in body
+    assert "event: done" in body
+    assert "completed" in body
