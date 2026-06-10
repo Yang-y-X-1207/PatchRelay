@@ -16,6 +16,16 @@ PatchRelay should not rebuild a full IM gateway or a full coding agent from scra
 
 The product should connect remote gateways or message entrypoints to local professional coding workers such as Claude Code and Codex. The core value is reliable task handoff, execution isolation, progress reporting, diff/test result collection, and controlled Git delivery.
 
+## Current Stage
+
+PatchRelay is currently in a basic-usable MVP stage.
+
+The immediate goal is to complete and stabilize the real end-to-end execution loop: OpenClaw or another gateway sends a coding task, PatchRelay accepts and normalizes it, a real coding worker such as Claude Code or Codex executes it, and PatchRelay returns status, logs, diffs, test results, and final outcome to the caller.
+
+At this stage, the priority is correctness of the core flow, clear protocol boundaries, practical debugging visibility, and a small reliable single-node deployment. Do not overbuild distributed infrastructure before the real task loop is proven useful.
+
+High availability, high reliability, and high concurrency are explicit later-stage system goals. The current MVP should keep an upgrade path for them, but should not delay the first usable integration by implementing the full production architecture too early.
+
 ## Architecture Sketch
 
 ```text
