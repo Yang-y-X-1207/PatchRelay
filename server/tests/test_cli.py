@@ -134,6 +134,7 @@ def test_setup_parser_accepts_yes_no_flow_options() -> None:
             "--config",
             "local.yaml",
             "--force",
+            "--yes",
             "--worker",
             "fake",
             "--gateway-url",
@@ -148,6 +149,7 @@ def test_setup_parser_accepts_yes_no_flow_options() -> None:
     assert args.command == "setup"
     assert args.config == "local.yaml"
     assert args.force is True
+    assert args.yes is True
     assert args.worker == "fake"
     assert args.gateway_url == "http://gateway.test"
     assert args.gateway_token == "gateway-secret"
@@ -416,6 +418,23 @@ def test_setup_runs_yes_no_happy_path(monkeypatch: pytest.MonkeyPatch, tmp_path:
     answers = iter(["y", "y", "y", "n"])
 
     monkeypatch.setattr(cli, "init_config", lambda config_path, force: init_result)
+    monkeypatch.setattr(
+        cli,
+        "preview_setup",
+        lambda config_path, worker=None: type(
+            "Preview",
+            (),
+            {
+                "config_path": config,
+                "repo_path": tmp_path,
+                "base_branch": "main",
+                "worker": worker or "fake",
+                "test_command": ["python", "-m", "pytest"],
+                "server_host": "127.0.0.1",
+                "server_port": 8787,
+            },
+        )(),
+    )
     monkeypatch.setattr(cli, "run_doctor", lambda settings: {"ok": True, "checks": []})
     monkeypatch.setattr(
         cli,
@@ -452,9 +471,53 @@ def test_setup_runs_yes_no_happy_path(monkeypatch: pytest.MonkeyPatch, tmp_path:
 
     output = capsys.readouterr().out
     assert "created:" in output
+    assert "Detected setup defaults:" in output
     assert "[ok] configure plugin" in output
     assert "setup completed" in output
     assert "worker" not in captured
+
+
+def test_setup_yes_accepts_default_answers(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys) -> None:
+    config = tmp_path / "patchrelay.yaml"
+    settings = Settings()
+    init_result = type("InitResult", (), {"config_path": config, "settings": settings, "overwritten": False})()
+    calls = {"doctor": 0, "apply": 0, "smoke": 0}
+
+    monkeypatch.setattr(
+        cli,
+        "preview_setup",
+        lambda config_path, worker=None: type(
+            "Preview",
+            (),
+            {
+                "config_path": config,
+                "repo_path": tmp_path,
+                "base_branch": "main",
+                "worker": worker or "fake",
+                "test_command": ["python", "-m", "pytest"],
+                "server_host": "127.0.0.1",
+                "server_port": 8787,
+            },
+        )(),
+    )
+    monkeypatch.setattr(cli, "init_config", lambda config_path, force: init_result)
+
+    def fake_doctor(settings):
+        calls["doctor"] += 1
+        return {"ok": True, "checks": []}
+
+    monkeypatch.setattr(cli, "run_doctor", fake_doctor)
+    monkeypatch.setattr(cli, "apply_openclaw_config", lambda settings: calls.__setitem__("apply", 1) or [])
+    monkeypatch.setattr(cli, "openclaw_submit_task", lambda args: calls.__setitem__("smoke", 1) or {"taskId": "task-1"})
+    args = cli.build_parser().parse_args(["setup", "--config", str(config), "--yes"])
+
+    cli.run_setup(args, input_func=lambda prompt: pytest.fail("input should not be called"))
+
+    output = capsys.readouterr().out
+    assert "Generate PatchRelay config" in output
+    assert calls["doctor"] == 1
+    assert calls["apply"] == 0
+    assert calls["smoke"] == 0
 
 
 def test_extract_task_id_rejects_missing_task_id() -> None:

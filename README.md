@@ -134,7 +134,13 @@ For a guided yes/no setup:
 uv run patchrelay setup --config .\patchrelay.yaml
 ```
 
-`patchrelay setup` uses detected defaults and only asks yes/no questions before writing config, running doctor checks, applying OpenClaw setup, or running a Gateway smoke test.
+`patchrelay setup` prints detected defaults and only asks yes/no questions before writing config, running doctor checks, applying OpenClaw setup, or running a Gateway smoke test.
+
+For demos and scripts, accept the default yes/no choices:
+
+```powershell
+uv run patchrelay setup --config .\patchrelay.yaml --yes
+```
 
 `patchrelay init` detects the current Git repository, current branch, available worker commands, a default test command, and writes a random local bearer token.
 

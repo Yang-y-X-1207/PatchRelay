@@ -33,6 +33,17 @@ class SmokePlan:
 
 
 @dataclass(frozen=True)
+class SetupPreview:
+    config_path: Path
+    repo_path: Path
+    base_branch: str
+    worker: str
+    test_command: list[str]
+    server_host: str = "127.0.0.1"
+    server_port: int = 8787
+
+
+@dataclass(frozen=True)
 class OpenClawApplyStep:
     name: str
     command: list[str]
@@ -72,31 +83,34 @@ def init_config(
     if path.exists() and not force:
         raise OnboardingError(f"{path} already exists. Use --force to overwrite it.")
 
-    resolved_repo_path = Path(repo_path).expanduser().resolve() if repo_path is not None else detect_git_repo(Path.cwd()) or Path.cwd()
-    selected_base_branch = base_branch or detect_current_branch(resolved_repo_path) or "main"
-    selected_worker = worker or detect_default_worker()
-    selected_test_command = test_command or detect_test_command(resolved_repo_path)
+    preview = preview_setup(
+        config_path,
+        repo_path=repo_path,
+        base_branch=base_branch,
+        worker=worker,
+        test_command=test_command,
+    )
     selected_token = token or generate_token()
     settings = Settings.model_validate(
         {
             "server": {
-                "host": "127.0.0.1",
-                "port": 8787,
+                "host": preview.server_host,
+                "port": preview.server_port,
                 "token": selected_token,
             },
             "repo": {
-                "path": str(resolved_repo_path),
-                "base_branch": selected_base_branch,
+                "path": str(preview.repo_path),
+                "base_branch": preview.base_branch,
                 "state_dir": ".patchrelay",
             },
             "worker": {
-                "default": selected_worker,
+                "default": preview.worker,
                 "codex_command": "codex",
                 "claude_command": "claude",
             },
             "tests": {
                 "default": {
-                    "command": selected_test_command,
+                    "command": preview.test_command,
                 }
             },
             "limits": {
@@ -111,6 +125,28 @@ def init_config(
     overwritten = path.exists()
     path.write_text(yaml.safe_dump(settings_to_yaml(settings), sort_keys=False), encoding="utf-8")
     return InitConfigResult(config_path=path, settings=settings, overwritten=overwritten)
+
+
+def preview_setup(
+    config_path: str | Path = "patchrelay.yaml",
+    *,
+    repo_path: str | Path | None = None,
+    base_branch: str | None = None,
+    worker: str | None = None,
+    test_command: list[str] | None = None,
+) -> SetupPreview:
+    resolved_repo_path = (
+        Path(repo_path).expanduser().resolve()
+        if repo_path is not None
+        else detect_git_repo(Path.cwd()) or Path.cwd()
+    )
+    return SetupPreview(
+        config_path=Path(config_path),
+        repo_path=resolved_repo_path,
+        base_branch=base_branch or detect_current_branch(resolved_repo_path) or "main",
+        worker=worker or detect_default_worker(),
+        test_command=test_command or detect_test_command(resolved_repo_path),
+    )
 
 
 def detect_git_repo(start: Path) -> Path | None:

@@ -10,6 +10,7 @@ from patchrelay.onboarding import (
     build_openclaw_apply_steps,
     generate_openclaw_commands,
     init_config,
+    preview_setup,
     smoke_plan,
 )
 from helpers import init_git_repo
@@ -73,6 +74,19 @@ def test_init_config_accepts_scripted_overrides(tmp_path: Path) -> None:
     assert result.settings.worker.default == "codex"
     assert result.settings.tests["default"].command == ["uv", "run", "pytest"]
     assert result.settings.server.token == "script-token"
+
+
+def test_preview_setup_returns_detected_defaults(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    repo = init_git_repo(tmp_path / "repo")
+    monkeypatch.setattr("patchrelay.onboarding.detect_default_worker", lambda: "fake")
+
+    preview = preview_setup(tmp_path / "patchrelay.yaml", repo_path=repo)
+
+    assert preview.config_path == tmp_path / "patchrelay.yaml"
+    assert preview.repo_path == repo
+    assert preview.base_branch == "main"
+    assert preview.worker == "fake"
+    assert preview.test_command
 
 
 def test_smoke_plan_uses_small_fake_task() -> None:

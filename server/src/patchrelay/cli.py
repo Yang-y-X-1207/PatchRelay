@@ -18,6 +18,7 @@ from patchrelay.onboarding import (
     build_openclaw_apply_steps,
     generate_openclaw_commands,
     init_config,
+    preview_setup,
     smoke_plan,
 )
 
@@ -74,6 +75,7 @@ def build_parser() -> argparse.ArgumentParser:
     setup = subcommands.add_parser("setup", help="Interactive yes/no guided local setup.")
     setup.add_argument("--config", default="patchrelay.yaml")
     setup.add_argument("--force", action="store_true", help="Allow replacing an existing configuration after confirmation.")
+    setup.add_argument("--yes", action="store_true", help="Accept default yes/no answers.")
     setup.add_argument("--worker", choices=["fake", "codex", "claude"], default="fake")
     setup.add_argument("--gateway-url", default=os.getenv("OPENCLAW_GATEWAY_URL", "http://127.0.0.1:19001"))
     setup.add_argument("--gateway-token", default=os.getenv("OPENCLAW_GATEWAY_TOKEN", "openclaw-local-token"))
@@ -278,22 +280,32 @@ def ask_yes_no(prompt: str, *, default: bool = True, input_func: Any = input) ->
         print("Please answer yes or no.")
 
 
+def setup_answer(args: argparse.Namespace, prompt: str, *, default: bool, input_func: Any) -> bool:
+    if getattr(args, "yes", False):
+        print(f"{prompt} [{'yes' if default else 'no'}]")
+        return default
+    return ask_yes_no(prompt, default=default, input_func=input_func)
+
+
 def run_setup(args: argparse.Namespace, input_func: Any = input) -> None:
     print("PatchRelay setup")
     print("This flow only asks yes/no questions and uses detected defaults.")
     print()
 
+    preview = preview_setup(args.config, worker=args.worker)
+    print_setup_preview(preview, config_exists=os.path.exists(args.config))
+
     config_exists = os.path.exists(args.config)
     if config_exists and not args.force:
-        if not ask_yes_no(f"{args.config} already exists. Overwrite it?", default=False, input_func=input_func):
+        if not setup_answer(args, f"{args.config} already exists. Overwrite it?", default=False, input_func=input_func):
             print("setup stopped: existing config kept")
             return
     elif config_exists and args.force:
-        if not ask_yes_no(f"Overwrite existing {args.config}?", default=True, input_func=input_func):
+        if not setup_answer(args, f"Overwrite existing {args.config}?", default=True, input_func=input_func):
             print("setup stopped: existing config kept")
             return
 
-    if not ask_yes_no(f"Generate PatchRelay config at {args.config}?", default=True, input_func=input_func):
+    if not setup_answer(args, f"Generate PatchRelay config at {args.config}?", default=True, input_func=input_func):
         print("setup stopped before config generation")
         return
 
@@ -304,14 +316,14 @@ def run_setup(args: argparse.Namespace, input_func: Any = input) -> None:
     print_init_result(init_result)
 
     settings = init_result.settings
-    if ask_yes_no("Run doctor checks now?", default=True, input_func=input_func):
+    if setup_answer(args, "Run doctor checks now?", default=True, input_func=input_func):
         doctor_result = run_doctor(settings)
         print_doctor(doctor_result)
-        if not doctor_result["ok"] and not ask_yes_no("Doctor failed. Continue anyway?", default=False, input_func=input_func):
+        if not doctor_result["ok"] and not setup_answer(args, "Doctor failed. Continue anyway?", default=False, input_func=input_func):
             print("setup stopped after doctor failure")
             return
 
-    if ask_yes_no("Apply OpenClaw plugin setup now?", default=False, input_func=input_func):
+    if setup_answer(args, "Apply OpenClaw plugin setup now?", default=False, input_func=input_func):
         results = apply_openclaw_config(settings)
         print_openclaw_apply_results(results)
         if not all(result.ok for result in results):
@@ -321,7 +333,7 @@ def run_setup(args: argparse.Namespace, input_func: Any = input) -> None:
         print("OpenClaw setup skipped. Dry-run plan:")
         print_openclaw_apply_plan(build_openclaw_apply_steps(settings))
 
-    if ask_yes_no("Run smoke test through OpenClaw Gateway now?", default=False, input_func=input_func):
+    if setup_answer(args, "Run smoke test through OpenClaw Gateway now?", default=False, input_func=input_func):
         plan = smoke_plan(args.worker)
         gateway_args = argparse.Namespace(
             gateway_url=args.gateway_url,
@@ -471,6 +483,17 @@ def print_init_result(result: Any) -> None:
     print(f"patchrelay serve --config {result.config_path}")
     print(f"patchrelay doctor --config {result.config_path}")
     print(f"patchrelay smoke --config {result.config_path} --worker fake --token {result.settings.server.token}")
+
+
+def print_setup_preview(preview: Any, *, config_exists: bool) -> None:
+    print("Detected setup defaults:")
+    print(f"config: {preview.config_path}{' (exists)' if config_exists else ''}")
+    print(f"repo: {preview.repo_path}")
+    print(f"base branch: {preview.base_branch}")
+    print(f"default worker: {preview.worker}")
+    print(f"test command: {' '.join(preview.test_command)}")
+    print(f"server: http://{preview.server_host}:{preview.server_port}")
+    print()
 
 
 def print_smoke_summary(payload: dict[str, Any]) -> None:

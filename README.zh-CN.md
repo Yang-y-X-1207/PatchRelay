@@ -134,7 +134,13 @@ uv run patchrelay init --config .\patchrelay.yaml
 uv run patchrelay setup --config .\patchrelay.yaml
 ```
 
-`patchrelay setup` 会使用自动探测出的默认值，并且只在写入配置、运行 doctor、应用 OpenClaw 设置、运行 Gateway smoke test 前询问 yes/no。
+`patchrelay setup` 会先展示自动探测出的默认值，并且只在写入配置、运行 doctor、应用 OpenClaw 设置、运行 Gateway smoke test 前询问 yes/no。
+
+演示或脚本化场景可以接受默认 yes/no 选择：
+
+```powershell
+uv run patchrelay setup --config .\patchrelay.yaml --yes
+```
 
 `patchrelay init` 会自动探测当前 Git 仓库、当前分支、可用 worker 命令、默认测试命令，并写入随机本地 bearer token。
 
