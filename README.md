@@ -130,6 +130,20 @@ uv run patchrelay init --config .\patchrelay.yaml
 
 `patchrelay init` detects the current Git repository, current branch, available worker commands, a default test command, and writes a random local bearer token.
 
+For scripted setup, pass explicit values:
+
+```powershell
+uv run patchrelay init `
+  --config .\patchrelay.yaml `
+  --force `
+  --yes `
+  --repo-path C:\path\to\your\repo `
+  --base-branch main `
+  --worker claude `
+  --test-command "python -m pytest" `
+  --token change-me
+```
+
 You can still copy `server/examples/patchrelay.yaml` manually if you want to start from the sample file.
 
 Example `patchrelay.yaml`:
@@ -246,6 +260,18 @@ Print OpenClaw setup commands from the current PatchRelay config:
 ```powershell
 cd C:\Users\57826\IdeaProjects\PatchRelay\PatchRelay\server
 uv run patchrelay openclaw --config .\patchrelay.yaml
+```
+
+Preview the OpenClaw setup steps:
+
+```powershell
+uv run patchrelay openclaw apply --config .\patchrelay.yaml
+```
+
+Apply the OpenClaw setup:
+
+```powershell
+uv run patchrelay openclaw apply --config .\patchrelay.yaml --apply
 ```
 
 Build and validate the plugin:

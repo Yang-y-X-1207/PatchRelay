@@ -130,6 +130,20 @@ uv run patchrelay init --config .\patchrelay.yaml
 
 `patchrelay init` 会自动探测当前 Git 仓库、当前分支、可用 worker 命令、默认测试命令，并写入随机本地 bearer token。
 
+脚本化配置时可以显式传入参数：
+
+```powershell
+uv run patchrelay init `
+  --config .\patchrelay.yaml `
+  --force `
+  --yes `
+  --repo-path C:\path\to\your\repo `
+  --base-branch main `
+  --worker claude `
+  --test-command "python -m pytest" `
+  --token change-me
+```
+
 如果你想从示例文件开始，也仍然可以手动复制 `server/examples/patchrelay.yaml`。
 
 示例 `patchrelay.yaml`：
@@ -246,6 +260,18 @@ uv run patchrelay cleanup --config .\patchrelay.yaml --force
 ```powershell
 cd C:\Users\57826\IdeaProjects\PatchRelay\PatchRelay\server
 uv run patchrelay openclaw --config .\patchrelay.yaml
+```
+
+预览 OpenClaw 设置步骤：
+
+```powershell
+uv run patchrelay openclaw apply --config .\patchrelay.yaml
+```
+
+执行 OpenClaw 设置：
+
+```powershell
+uv run patchrelay openclaw apply --config .\patchrelay.yaml --apply
 ```
 
 构建并校验插件：

@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import shlex
 import sys
 import time
 from typing import Any
@@ -11,7 +12,14 @@ import uvicorn
 from patchrelay.cleanup import CleanupError, cleanup_patchrelay
 from patchrelay.config import ConfigError, load_settings
 from patchrelay.doctor import config_error_result, run_doctor
-from patchrelay.onboarding import OnboardingError, generate_openclaw_commands, init_config, smoke_plan
+from patchrelay.onboarding import (
+    OnboardingError,
+    apply_openclaw_config,
+    build_openclaw_apply_steps,
+    generate_openclaw_commands,
+    init_config,
+    smoke_plan,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -56,6 +64,12 @@ def build_parser() -> argparse.ArgumentParser:
     init = subcommands.add_parser("init", help="Generate a local PatchRelay configuration.")
     init.add_argument("--config", default="patchrelay.yaml")
     init.add_argument("--force", action="store_true", help="Overwrite an existing configuration file.")
+    init.add_argument("--yes", action="store_true", help="Run non-interactively. Accepted for script-friendly usage.")
+    init.add_argument("--repo-path", help="Target repository path.")
+    init.add_argument("--base-branch", help="Base branch for PatchRelay task worktrees.")
+    init.add_argument("--worker", choices=["auto", "fake", "codex", "claude"], help="Default worker.")
+    init.add_argument("--test-command", help='Default test command, for example "python -m pytest".')
+    init.add_argument("--token", help="Bearer token to write into the config. Defaults to a generated token.")
 
     smoke = subcommands.add_parser("smoke", help="Submit a minimal task to a running PatchRelay server.")
     smoke.add_argument("--config", default="patchrelay.yaml")
@@ -66,8 +80,10 @@ def build_parser() -> argparse.ArgumentParser:
     smoke.add_argument("--interval", type=float, default=1)
     smoke.add_argument("--json", action="store_true", help="Print raw JSON.")
 
-    openclaw = subcommands.add_parser("openclaw", help="Print OpenClaw setup commands for this PatchRelay config.")
+    openclaw = subcommands.add_parser("openclaw", help="Print or apply OpenClaw setup for this PatchRelay config.")
+    openclaw.add_argument("action", nargs="?", choices=["apply"])
     openclaw.add_argument("--config", default="patchrelay.yaml")
+    openclaw.add_argument("--apply", action="store_true", help="Actually run OpenClaw setup commands.")
 
     cleanup = subcommands.add_parser("cleanup", help="Clean PatchRelay worktrees, branches, and local state.")
     cleanup.add_argument("--config", default="patchrelay.yaml")
@@ -137,7 +153,15 @@ def main() -> None:
 
     if args.command == "init":
         try:
-            result = init_config(args.config, force=args.force)
+            result = init_config(
+                args.config,
+                force=args.force,
+                repo_path=args.repo_path,
+                base_branch=args.base_branch,
+                worker=args.worker,
+                test_command=parse_test_command(args.test_command),
+                token=args.token,
+            )
         except OnboardingError as exc:
             raise SystemExit(str(exc)) from exc
         print_init_result(result)
@@ -170,6 +194,14 @@ def main() -> None:
             settings = load_settings(args.config)
         except ConfigError as exc:
             raise SystemExit(str(exc)) from exc
+        if args.action == "apply":
+            steps = build_openclaw_apply_steps(settings)
+            if not args.apply:
+                print_openclaw_apply_plan(steps)
+                return
+            results = apply_openclaw_config(settings)
+            print_openclaw_apply_results(results)
+            raise SystemExit(0 if all(result.ok for result in results) else 1)
         print_openclaw_commands(generate_openclaw_commands(settings))
         return
 
@@ -191,6 +223,15 @@ def main() -> None:
 def add_client_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--url", default=os.getenv("PATCHRELAY_URL", "http://127.0.0.1:8787"))
     parser.add_argument("--token", default=os.getenv("PATCHRELAY_TOKEN", "change-me"))
+
+
+def parse_test_command(value: str | None) -> list[str] | None:
+    if value is None:
+        return None
+    command = shlex.split(value)
+    if not command:
+        raise SystemExit("--test-command must not be empty")
+    return command
 
 
 def request_json(
@@ -288,6 +329,25 @@ def print_openclaw_commands(commands: list[str]) -> None:
         print(f"# {index}")
         print(command)
         print()
+
+
+def print_openclaw_apply_plan(steps: list[Any]) -> None:
+    print("dry-run: OpenClaw setup plan")
+    print("add --apply to execute these steps")
+    for index, step in enumerate(steps, start=1):
+        cwd = f" (cwd: {step.cwd})" if step.cwd else ""
+        print(f"{index}. {step.name}{cwd}")
+        print(f"   {step.display_command()}")
+
+
+def print_openclaw_apply_results(results: list[Any]) -> None:
+    for result in results:
+        status = "ok" if result.ok else "fail"
+        print(f"[{status}] {result.step.name}: {result.step.display_command()}")
+        if result.stdout.strip():
+            print(result.stdout.strip())
+        if result.stderr.strip():
+            print(result.stderr.strip())
 
 
 def print_cleanup(result: dict[str, Any]) -> None:

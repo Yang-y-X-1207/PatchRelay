@@ -32,34 +32,71 @@ class SmokePlan:
     worker: WorkerChoice
 
 
-def init_config(config_path: str | Path = "patchrelay.yaml", *, force: bool = False) -> InitConfigResult:
+@dataclass(frozen=True)
+class OpenClawApplyStep:
+    name: str
+    command: list[str]
+    cwd: Path | None = None
+    stdin: str | None = None
+
+    def display_command(self) -> str:
+        rendered = " ".join(quote_shell_arg(part) for part in self.command)
+        if self.stdin is None:
+            return rendered
+        return f"<config-json> | {rendered}"
+
+
+@dataclass(frozen=True)
+class OpenClawApplyResult:
+    step: OpenClawApplyStep
+    exit_code: int
+    stdout: str
+    stderr: str
+
+    @property
+    def ok(self) -> bool:
+        return self.exit_code == 0
+
+
+def init_config(
+    config_path: str | Path = "patchrelay.yaml",
+    *,
+    force: bool = False,
+    repo_path: str | Path | None = None,
+    base_branch: str | None = None,
+    worker: str | None = None,
+    test_command: list[str] | None = None,
+    token: str | None = None,
+) -> InitConfigResult:
     path = Path(config_path)
     if path.exists() and not force:
         raise OnboardingError(f"{path} already exists. Use --force to overwrite it.")
 
-    repo_path = detect_git_repo(Path.cwd()) or Path.cwd()
-    base_branch = detect_current_branch(repo_path) or "main"
-    default_worker = detect_default_worker()
+    resolved_repo_path = Path(repo_path).expanduser().resolve() if repo_path is not None else detect_git_repo(Path.cwd()) or Path.cwd()
+    selected_base_branch = base_branch or detect_current_branch(resolved_repo_path) or "main"
+    selected_worker = worker or detect_default_worker()
+    selected_test_command = test_command or detect_test_command(resolved_repo_path)
+    selected_token = token or generate_token()
     settings = Settings.model_validate(
         {
             "server": {
                 "host": "127.0.0.1",
                 "port": 8787,
-                "token": generate_token(),
+                "token": selected_token,
             },
             "repo": {
-                "path": str(repo_path),
-                "base_branch": base_branch,
+                "path": str(resolved_repo_path),
+                "base_branch": selected_base_branch,
                 "state_dir": ".patchrelay",
             },
             "worker": {
-                "default": default_worker,
+                "default": selected_worker,
                 "codex_command": "codex",
                 "claude_command": "claude",
             },
             "tests": {
                 "default": {
-                    "command": detect_test_command(repo_path),
+                    "command": selected_test_command,
                 }
             },
             "limits": {
@@ -186,12 +223,73 @@ def generate_openclaw_commands(settings: Settings, plugin_root: Path | None = No
     ]
 
 
+def build_openclaw_apply_steps(settings: Settings, plugin_root: Path | None = None) -> list[OpenClawApplyStep]:
+    root = plugin_root or default_openclaw_plugin_root()
+    base_url = f"http://{settings.server.host}:{settings.server.port}"
+    token = settings.server.token
+    return [
+        OpenClawApplyStep(
+            name="validate plugin",
+            command=["npm.cmd" if is_windows() else "npm", "run", "plugin:validate"],
+            cwd=root,
+        ),
+        OpenClawApplyStep(
+            name="install plugin",
+            command=["openclaw", "plugins", "install", str(root), "--link"],
+        ),
+        OpenClawApplyStep(
+            name="configure plugin",
+            command=["openclaw", "config", "patch", "--stdin"],
+            stdin=openclaw_config_json(base_url, token),
+        ),
+    ]
+
+
+def apply_openclaw_config(settings: Settings, plugin_root: Path | None = None) -> list[OpenClawApplyResult]:
+    results: list[OpenClawApplyResult] = []
+    for step in build_openclaw_apply_steps(settings, plugin_root):
+        try:
+            result = subprocess.run(
+                step.command,
+                cwd=str(step.cwd) if step.cwd else None,
+                input=step.stdin,
+                check=False,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+        except FileNotFoundError as exc:
+            results.append(OpenClawApplyResult(step=step, exit_code=127, stdout="", stderr=str(exc)))
+            break
+        apply_result = OpenClawApplyResult(
+            step=step,
+            exit_code=result.returncode,
+            stdout=result.stdout,
+            stderr=result.stderr,
+        )
+        results.append(apply_result)
+        if not apply_result.ok:
+            break
+    return results
+
+
 def default_openclaw_plugin_root() -> Path:
     return Path(__file__).resolve().parents[3] / "plugins" / "openclaw"
 
 
 def quote_powershell_path(path: Path) -> str:
     return "'" + str(path).replace("'", "''") + "'"
+
+
+def quote_shell_arg(value: str) -> str:
+    if not value or any(char.isspace() for char in value):
+        return '"' + value.replace('"', '\\"') + '"'
+    return value
+
+
+def is_windows() -> bool:
+    return shutil.which("cmd.exe") is not None
 
 
 def openclaw_config_patch_command(base_url: str, token: str) -> str:
@@ -211,6 +309,24 @@ def openclaw_config_patch_command(base_url: str, token: str) -> str:
         "  }\n"
         "}\n"
         "'@ | openclaw config patch --stdin"
+    )
+
+
+def openclaw_config_json(base_url: str, token: str) -> str:
+    return (
+        "{\n"
+        "  plugins: {\n"
+        "    entries: {\n"
+        "      patchrelay: {\n"
+        "        enabled: true,\n"
+        "        config: {\n"
+        f'          baseUrl: "{base_url}",\n'
+        f'          token: "{token}"\n'
+        "        }\n"
+        "      }\n"
+        "    }\n"
+        "  }\n"
+        "}\n"
     )
 
 

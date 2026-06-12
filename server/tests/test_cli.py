@@ -96,11 +96,35 @@ def test_cleanup_parser_accepts_force_and_json() -> None:
 
 
 def test_init_parser_accepts_force_and_config() -> None:
-    args = cli.build_parser().parse_args(["init", "--config", "local.yaml", "--force"])
+    args = cli.build_parser().parse_args(
+        [
+            "init",
+            "--config",
+            "local.yaml",
+            "--force",
+            "--yes",
+            "--repo-path",
+            "repo",
+            "--base-branch",
+            "trunk",
+            "--worker",
+            "codex",
+            "--test-command",
+            "uv run pytest",
+            "--token",
+            "secret",
+        ]
+    )
 
     assert args.command == "init"
     assert args.config == "local.yaml"
     assert args.force is True
+    assert args.yes is True
+    assert args.repo_path == "repo"
+    assert args.base_branch == "trunk"
+    assert args.worker == "codex"
+    assert args.test_command == "uv run pytest"
+    assert args.token == "secret"
 
 
 def test_smoke_parser_accepts_worker_url_and_token() -> None:
@@ -116,10 +140,21 @@ def test_smoke_parser_accepts_worker_url_and_token() -> None:
 
 
 def test_openclaw_parser_accepts_config() -> None:
-    args = cli.build_parser().parse_args(["openclaw", "--config", "local.yaml"])
+    args = cli.build_parser().parse_args(["openclaw", "apply", "--config", "local.yaml", "--apply"])
 
     assert args.command == "openclaw"
+    assert args.action == "apply"
     assert args.config == "local.yaml"
+    assert args.apply is True
+
+
+def test_parse_test_command_uses_shell_like_splitting() -> None:
+    assert cli.parse_test_command('python -m pytest "tests/unit suite"') == [
+        "python",
+        "-m",
+        "pytest",
+        "tests/unit suite",
+    ]
 
 
 def test_submit_task_sends_a2a_like_payload(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -203,6 +238,64 @@ repo:
     assert captured["submit"]["worker"] == "fake"
     assert "smoke test" in captured["submit"]["instruction"][0].lower()
     assert captured["wait"] == {"task_id": "task-1", "timeout": 10}
+
+
+def test_openclaw_apply_defaults_to_dry_run(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys) -> None:
+    config = tmp_path / "patchrelay.yaml"
+    config.write_text("server:\n  token: file-token\n", encoding="utf-8")
+    called = False
+
+    def fake_apply(settings):
+        nonlocal called
+        called = True
+        return []
+
+    monkeypatch.setattr(cli, "apply_openclaw_config", fake_apply)
+    monkeypatch.setattr(
+        cli.sys,
+        "argv",
+        ["patchrelay", "openclaw", "apply", "--config", str(config)],
+    )
+
+    cli.main()
+
+    output = capsys.readouterr().out
+    assert "dry-run" in output
+    assert "configure plugin" in output
+    assert called is False
+
+
+def test_openclaw_apply_executes_when_apply_flag_is_set(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys) -> None:
+    config = tmp_path / "patchrelay.yaml"
+    config.write_text("server:\n  token: file-token\n", encoding="utf-8")
+
+    class Step:
+        name = "configure plugin"
+        cwd = None
+
+        def display_command(self) -> str:
+            return "openclaw config patch --stdin"
+
+    class Result:
+        step = Step()
+        ok = True
+        stdout = "done"
+        stderr = ""
+
+    monkeypatch.setattr(cli, "apply_openclaw_config", lambda settings: [Result()])
+    monkeypatch.setattr(
+        cli.sys,
+        "argv",
+        ["patchrelay", "openclaw", "apply", "--config", str(config), "--apply"],
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+
+    output = capsys.readouterr().out
+    assert exc.value.code == 0
+    assert "[ok] configure plugin" in output
+    assert "done" in output
 
 
 def test_wait_for_task_stops_on_terminal_status(monkeypatch: pytest.MonkeyPatch) -> None:
