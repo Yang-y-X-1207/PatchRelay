@@ -1,8 +1,6 @@
 import argparse
 import json
 import os
-import shutil
-import subprocess
 import sys
 import time
 from typing import Any
@@ -11,8 +9,9 @@ import httpx
 import uvicorn
 
 from patchrelay.cleanup import CleanupError, cleanup_patchrelay
-from patchrelay.config import ConfigError, Settings, command_to_display, load_settings
-from patchrelay.git_workspace import GitWorkspaceError, GitWorkspaceManager
+from patchrelay.config import ConfigError, load_settings
+from patchrelay.doctor import config_error_result, run_doctor
+from patchrelay.onboarding import OnboardingError, generate_openclaw_commands, init_config, smoke_plan
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -53,6 +52,22 @@ def build_parser() -> argparse.ArgumentParser:
     doctor = subcommands.add_parser("doctor", help="Check local PatchRelay configuration and tools.")
     doctor.add_argument("--config", default="patchrelay.yaml")
     doctor.add_argument("--json", action="store_true", help="Print raw JSON.")
+
+    init = subcommands.add_parser("init", help="Generate a local PatchRelay configuration.")
+    init.add_argument("--config", default="patchrelay.yaml")
+    init.add_argument("--force", action="store_true", help="Overwrite an existing configuration file.")
+
+    smoke = subcommands.add_parser("smoke", help="Submit a minimal task to a running PatchRelay server.")
+    smoke.add_argument("--config", default="patchrelay.yaml")
+    smoke.add_argument("--worker", choices=["fake", "codex", "claude"], default="fake")
+    smoke.add_argument("--url")
+    smoke.add_argument("--token")
+    smoke.add_argument("--timeout", type=float, default=300)
+    smoke.add_argument("--interval", type=float, default=1)
+    smoke.add_argument("--json", action="store_true", help="Print raw JSON.")
+
+    openclaw = subcommands.add_parser("openclaw", help="Print OpenClaw setup commands for this PatchRelay config.")
+    openclaw.add_argument("--config", default="patchrelay.yaml")
 
     cleanup = subcommands.add_parser("cleanup", help="Clean PatchRelay worktrees, branches, and local state.")
     cleanup.add_argument("--config", default="patchrelay.yaml")
@@ -113,12 +128,50 @@ def main() -> None:
         try:
             settings = load_settings(args.config)
         except ConfigError as exc:
-            result = {"ok": False, "checks": [{"name": "config", "ok": False, "message": str(exc)}]}
+            result = config_error_result(str(exc))
             print_json(result) if args.json else print_doctor(result)
             raise SystemExit(1)
         result = run_doctor(settings)
         print_json(result) if args.json else print_doctor(result)
         raise SystemExit(0 if result["ok"] else 1)
+
+    if args.command == "init":
+        try:
+            result = init_config(args.config, force=args.force)
+        except OnboardingError as exc:
+            raise SystemExit(str(exc)) from exc
+        print_init_result(result)
+        return
+
+    if args.command == "smoke":
+        try:
+            settings = load_settings(args.config)
+        except ConfigError as exc:
+            raise SystemExit(str(exc)) from exc
+        url = args.url or f"http://{settings.server.host}:{settings.server.port}"
+        token = args.token or settings.server.token
+        plan = smoke_plan(args.worker)
+        client_args = argparse.Namespace(
+            url=url,
+            token=token,
+            instruction=[plan.instruction],
+            worker=plan.worker,
+            test_profile="default",
+            timeout=args.timeout,
+            interval=args.interval,
+        )
+        payload = submit_task(client_args)
+        payload = wait_for_task(client_args, payload["taskId"])
+        print_json(payload) if args.json else print_smoke_summary(payload)
+        return
+
+    if args.command == "openclaw":
+        try:
+            settings = load_settings(args.config)
+        except ConfigError as exc:
+            raise SystemExit(str(exc)) from exc
+        print_openclaw_commands(generate_openclaw_commands(settings))
+        return
 
     if args.command == "cleanup":
         try:
@@ -198,63 +251,43 @@ def print_task_summary(payload: dict[str, Any]) -> None:
         print(f"test status: {summary.get('testStatus')}")
 
 
-def run_doctor(settings: Settings) -> dict[str, Any]:
-    checks = [
-        check_repo(settings),
-        check_command("git", ["git", "--version"]),
-        check_worker_command("codex", settings.worker.codex_command),
-        check_worker_command("claude", settings.worker.claude_command),
-        check_tests(settings),
-    ]
-    return {"ok": all(check["ok"] for check in checks), "checks": checks}
-
-
-def check_repo(settings: Settings) -> dict[str, Any]:
-    manager = GitWorkspaceManager(settings.repo.path, settings.repo.state_dir, settings.repo.base_branch)
-    try:
-        manager.validate()
-    except GitWorkspaceError as exc:
-        return {"name": "repo", "ok": False, "message": str(exc)}
-    return {
-        "name": "repo",
-        "ok": True,
-        "message": f"{settings.repo.path} on base branch {settings.repo.base_branch}",
-    }
-
-
-def check_command(name: str, command: list[str]) -> dict[str, Any]:
-    try:
-        result = subprocess.run(command, check=False, capture_output=True, text=True, timeout=10)
-    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
-        return {"name": name, "ok": False, "message": str(exc)}
-    output = (result.stdout or result.stderr).strip()
-    return {"name": name, "ok": result.returncode == 0, "message": output}
-
-
-def check_worker_command(name: str, command: str | list[str]) -> dict[str, Any]:
-    executable = command[0] if isinstance(command, list) else command
-    found = shutil.which(executable)
-    return {
-        "name": f"worker:{name}",
-        "ok": found is not None,
-        "message": found or f"{command_to_display(command)} not found on PATH",
-    }
-
-
-def check_tests(settings: Settings) -> dict[str, Any]:
-    profile_names = sorted(settings.tests.keys())
-    return {
-        "name": "tests",
-        "ok": "default" in settings.tests,
-        "message": f"configured profiles: {', '.join(profile_names)}",
-    }
-
-
 def print_doctor(result: dict[str, Any]) -> None:
     for check in result["checks"]:
         status = "ok" if check["ok"] else "fail"
         print(f"[{status}] {check['name']}: {check['message']}")
+        if check.get("hint"):
+            print(f"hint: {check['hint']}")
     print(f"overall: {'ok' if result['ok'] else 'fail'}")
+
+
+def print_init_result(result: Any) -> None:
+    action = "overwrote" if result.overwritten else "created"
+    print(f"{action}: {result.config_path}")
+    print(f"repo: {result.settings.repo.path}")
+    print(f"base branch: {result.settings.repo.base_branch}")
+    print(f"default worker: {result.settings.worker.default}")
+    print()
+    print(f"patchrelay serve --config {result.config_path}")
+    print(f"patchrelay doctor --config {result.config_path}")
+    print(f"patchrelay smoke --config {result.config_path} --worker fake --token {result.settings.server.token}")
+
+
+def print_smoke_summary(payload: dict[str, Any]) -> None:
+    print(f"task: {payload['taskId']}")
+    print(f"status: {payload['status']}")
+    print(f"worker: {payload['worker']}")
+    summary = payload.get("artifacts", {}).get("patchrelay.summary", {}).get("content", {})
+    changed_files = summary.get("changedFiles") or []
+    test_status = summary.get("testStatus") or "-"
+    print(f"changed files: {', '.join(changed_files) or '-'}")
+    print(f"test status: {test_status}")
+
+
+def print_openclaw_commands(commands: list[str]) -> None:
+    for index, command in enumerate(commands, start=1):
+        print(f"# {index}")
+        print(command)
+        print()
 
 
 def print_cleanup(result: dict[str, Any]) -> None:

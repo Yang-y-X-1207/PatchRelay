@@ -4,6 +4,7 @@ import pytest
 
 from patchrelay import cli
 from patchrelay.config import RepoConfig, Settings, WorkerConfig
+from patchrelay.doctor import run_doctor
 from helpers import init_git_repo
 
 
@@ -14,7 +15,7 @@ def test_doctor_reports_repo_and_profiles(tmp_path: Path) -> None:
         worker=WorkerConfig(codex_command="python", claude_command="python"),
     )
 
-    result = cli.run_doctor(settings)
+    result = run_doctor(settings)
 
     assert any(check["name"] == "repo" and check["ok"] for check in result["checks"])
     assert any(check["name"] == "tests" and check["ok"] for check in result["checks"])
@@ -94,6 +95,33 @@ def test_cleanup_parser_accepts_force_and_json() -> None:
     assert args.json is True
 
 
+def test_init_parser_accepts_force_and_config() -> None:
+    args = cli.build_parser().parse_args(["init", "--config", "local.yaml", "--force"])
+
+    assert args.command == "init"
+    assert args.config == "local.yaml"
+    assert args.force is True
+
+
+def test_smoke_parser_accepts_worker_url_and_token() -> None:
+    args = cli.build_parser().parse_args(
+        ["smoke", "--worker", "fake", "--url", "http://example.test", "--token", "secret", "--timeout", "10"]
+    )
+
+    assert args.command == "smoke"
+    assert args.worker == "fake"
+    assert args.url == "http://example.test"
+    assert args.token == "secret"
+    assert args.timeout == 10
+
+
+def test_openclaw_parser_accepts_config() -> None:
+    args = cli.build_parser().parse_args(["openclaw", "--config", "local.yaml"])
+
+    assert args.command == "openclaw"
+    assert args.config == "local.yaml"
+
+
 def test_submit_task_sends_a2a_like_payload(monkeypatch: pytest.MonkeyPatch) -> None:
     captured = {}
 
@@ -111,6 +139,70 @@ def test_submit_task_sends_a2a_like_payload(monkeypatch: pytest.MonkeyPatch) -> 
     assert captured["path"] == "/message:send"
     assert captured["payload"]["message"]["parts"][0]["text"] == "fix bug"
     assert captured["payload"]["metadata"]["patchrelay"]["worker"] == "fake"
+
+
+def test_smoke_uses_generated_instruction_and_waits(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    config = tmp_path / "patchrelay.yaml"
+    config.write_text(
+        """
+server:
+  token: file-token
+repo:
+  path: .
+""",
+        encoding="utf-8",
+    )
+    captured = {}
+
+    def fake_submit(args) -> dict:
+        captured["submit"] = {
+            "url": args.url,
+            "token": args.token,
+            "instruction": args.instruction,
+            "worker": args.worker,
+        }
+        return {"taskId": "task-1", "status": "queued"}
+
+    def fake_wait(args, task_id: str) -> dict:
+        captured["wait"] = {"task_id": task_id, "timeout": args.timeout}
+        return {
+            "taskId": task_id,
+            "status": "completed",
+            "worker": args.worker,
+            "artifacts": {
+                "patchrelay.summary": {
+                    "content": {
+                        "changedFiles": ["fake-change.txt"],
+                        "testStatus": "passed",
+                    }
+                }
+            },
+        }
+
+    monkeypatch.setattr(cli, "submit_task", fake_submit)
+    monkeypatch.setattr(cli, "wait_for_task", fake_wait)
+    monkeypatch.setattr(
+        cli.sys,
+        "argv",
+        [
+            "patchrelay",
+            "smoke",
+            "--config",
+            str(config),
+            "--worker",
+            "fake",
+            "--token",
+            "override-token",
+            "--timeout",
+            "10",
+        ],
+    )
+    cli.main()
+
+    assert captured["submit"]["token"] == "override-token"
+    assert captured["submit"]["worker"] == "fake"
+    assert "smoke test" in captured["submit"]["instruction"][0].lower()
+    assert captured["wait"] == {"task_id": "task-1", "timeout": 10}
 
 
 def test_wait_for_task_stops_on_terminal_status(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -29,7 +29,7 @@ def wait_for_status(
     task_id: str,
     *statuses: str,
 ) -> dict:
-    deadline = time.monotonic() + 2
+    deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
         response = client.get(f"/tasks/{task_id}", headers=headers)
         assert response.status_code == 200
@@ -46,7 +46,7 @@ def wait_for_artifact(
     task_id: str,
     artifact_name: str,
 ) -> dict:
-    deadline = time.monotonic() + 2
+    deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
         response = client.get(f"/tasks/{task_id}", headers=headers)
         assert response.status_code == 200

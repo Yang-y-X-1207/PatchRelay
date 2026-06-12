@@ -121,12 +121,16 @@ npm run build
 
 ## PatchRelay 配置
 
-创建 server 配置：
+生成 server 配置：
 
 ```powershell
 cd C:\Users\57826\IdeaProjects\PatchRelay\PatchRelay\server
-Copy-Item .\examples\patchrelay.yaml .\patchrelay.yaml
+uv run patchrelay init --config .\patchrelay.yaml
 ```
+
+`patchrelay init` 会自动探测当前 Git 仓库、当前分支、可用 worker 命令、默认测试命令，并写入随机本地 bearer token。
+
+如果你想从示例文件开始，也仍然可以手动复制 `server/examples/patchrelay.yaml`。
 
 示例 `patchrelay.yaml`：
 
@@ -193,6 +197,12 @@ uv run patchrelay doctor --config .\patchrelay.yaml
 
 ## 本地 CLI 使用
 
+对运行中的 PatchRelay server 执行本地 smoke test：
+
+```powershell
+uv run patchrelay smoke --config .\patchrelay.yaml --worker fake
+```
+
 提交 fake worker 任务：
 
 ```powershell
@@ -230,6 +240,13 @@ uv run patchrelay cleanup --config .\patchrelay.yaml --force
 ```
 
 ## OpenClaw 集成
+
+根据当前 PatchRelay 配置打印 OpenClaw 设置命令：
+
+```powershell
+cd C:\Users\57826\IdeaProjects\PatchRelay\PatchRelay\server
+uv run patchrelay openclaw --config .\patchrelay.yaml
+```
 
 构建并校验插件：
 
