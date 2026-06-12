@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from patchrelay import cli
-from patchrelay.config import RepoConfig, Settings, WorkerConfig
+from patchrelay.config import ConfigError, RepoConfig, Settings, WorkerConfig
 from patchrelay.doctor import run_doctor
 from helpers import init_git_repo
 
@@ -154,6 +154,27 @@ def test_setup_parser_accepts_yes_no_flow_options() -> None:
     assert args.gateway_url == "http://gateway.test"
     assert args.gateway_token == "gateway-secret"
     assert args.timeout == 10
+
+
+def test_setup_status_parser_accepts_gateway_options() -> None:
+    args = cli.build_parser().parse_args(
+        [
+            "setup",
+            "status",
+            "--config",
+            "local.yaml",
+            "--gateway-url",
+            "http://gateway.test",
+            "--gateway-token",
+            "gateway-secret",
+        ]
+    )
+
+    assert args.command == "setup"
+    assert args.action == "status"
+    assert args.config == "local.yaml"
+    assert args.gateway_url == "http://gateway.test"
+    assert args.gateway_token == "gateway-secret"
 
 
 def test_smoke_parser_accepts_worker_url_and_token() -> None:
@@ -518,6 +539,72 @@ def test_setup_yes_accepts_default_answers(monkeypatch: pytest.MonkeyPatch, tmp_
     assert calls["doctor"] == 1
     assert calls["apply"] == 0
     assert calls["smoke"] == 0
+
+
+def test_setup_status_reports_all_checks_ok(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = Settings()
+
+    monkeypatch.setattr(cli, "load_settings", lambda config: settings)
+    monkeypatch.setattr(cli, "run_doctor", lambda settings: {"ok": True, "checks": []})
+    monkeypatch.setattr(
+        cli,
+        "request_json",
+        lambda args, method, path, payload=None: {"status": "ok"},
+    )
+    monkeypatch.setattr(cli, "request_openclaw_json", lambda args, tool_name, tool_args: {"error": "not found"})
+    args = cli.build_parser().parse_args(["setup", "status"])
+
+    result = cli.run_setup_status(args)
+
+    assert result["ok"] is True
+    assert [check["name"] for check in result["checks"]] == [
+        "config",
+        "doctor",
+        "patchrelay_server",
+        "openclaw_gateway",
+    ]
+    assert all(check["ok"] for check in result["checks"])
+
+
+def test_setup_status_reports_config_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_load_settings(config: str) -> Settings:
+        raise ConfigError("bad config")
+
+    monkeypatch.setattr(cli, "load_settings", fake_load_settings)
+    monkeypatch.setattr(
+        cli,
+        "request_openclaw_json",
+        lambda args, tool_name, tool_args: (_ for _ in ()).throw(SystemExit("gateway down")),
+    )
+    args = cli.build_parser().parse_args(["setup", "status", "--config", "missing.yaml"])
+
+    result = cli.run_setup_status(args)
+
+    assert result["ok"] is False
+    assert result["checks"][0]["name"] == "config"
+    assert result["checks"][0]["ok"] is False
+    assert result["checks"][1]["message"] == "skipped because config failed"
+
+
+def test_print_setup_status_includes_hints(capsys) -> None:
+    cli.print_setup_status(
+        {
+            "ok": False,
+            "checks": [
+                {
+                    "name": "config",
+                    "ok": False,
+                    "message": "missing",
+                    "hint": "run setup",
+                }
+            ],
+        }
+    )
+
+    output = capsys.readouterr().out
+    assert "[fail] config: missing" in output
+    assert "hint: run setup" in output
+    assert "overall: fail" in output
 
 
 def test_extract_task_id_rejects_missing_task_id() -> None:

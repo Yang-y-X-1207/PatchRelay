@@ -142,6 +142,14 @@ For demos and scripts, accept the default yes/no choices:
 uv run patchrelay setup --config .\patchrelay.yaml --yes
 ```
 
+Check the current setup state without changing anything:
+
+```powershell
+uv run patchrelay setup status --config .\patchrelay.yaml
+```
+
+`setup status` checks the config, doctor checks, PatchRelay `/health`, and OpenClaw Gateway tool reachability.
+
 `patchrelay init` detects the current Git repository, current branch, available worker commands, a default test command, and writes a random local bearer token.
 
 For scripted setup, pass explicit values:

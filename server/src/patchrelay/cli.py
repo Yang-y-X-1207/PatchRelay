@@ -4,6 +4,7 @@ import os
 import shlex
 import sys
 import time
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -73,6 +74,7 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--token", help="Bearer token to write into the config. Defaults to a generated token.")
 
     setup = subcommands.add_parser("setup", help="Interactive yes/no guided local setup.")
+    setup.add_argument("action", nargs="?", choices=["status"])
     setup.add_argument("--config", default="patchrelay.yaml")
     setup.add_argument("--force", action="store_true", help="Allow replacing an existing configuration after confirmation.")
     setup.add_argument("--yes", action="store_true", help="Accept default yes/no answers.")
@@ -182,6 +184,10 @@ def main() -> None:
         return
 
     if args.command == "setup":
+        if args.action == "status":
+            result = run_setup_status(args)
+            print_setup_status(result)
+            raise SystemExit(0 if result["ok"] else 1)
         run_setup(args)
         return
 
@@ -352,6 +358,110 @@ def run_setup(args: argparse.Namespace, input_func: Any = input) -> None:
     print("setup completed")
 
 
+@dataclass(frozen=True)
+class SetupStatusCheck:
+    name: str
+    ok: bool
+    message: str
+    hint: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "ok": self.ok,
+            "message": self.message,
+            "hint": self.hint,
+        }
+
+
+def run_setup_status(args: argparse.Namespace) -> dict[str, Any]:
+    checks: list[SetupStatusCheck] = []
+    settings = None
+    try:
+        settings = load_settings(args.config)
+        checks.append(SetupStatusCheck("config", True, f"loaded {args.config}"))
+    except ConfigError as exc:
+        checks.append(
+            SetupStatusCheck(
+                "config",
+                False,
+                str(exc),
+                f"Run patchrelay setup --config {args.config} to generate a valid config.",
+            )
+        )
+
+    if settings is not None:
+        doctor_result = run_doctor(settings)
+        checks.append(
+            SetupStatusCheck(
+                "doctor",
+                bool(doctor_result["ok"]),
+                "doctor checks passed" if doctor_result["ok"] else "doctor checks failed",
+                first_failed_hint(doctor_result),
+            )
+        )
+        base_url = f"http://{settings.server.host}:{settings.server.port}"
+        checks.append(check_patchrelay_server(base_url, settings.server.token))
+    else:
+        checks.append(SetupStatusCheck("doctor", False, "skipped because config failed"))
+        checks.append(SetupStatusCheck("patchrelay_server", False, "skipped because config failed"))
+
+    checks.append(check_openclaw_gateway(args.gateway_url, args.gateway_token))
+    payload = {
+        "ok": all(check.ok for check in checks),
+        "checks": [check.to_dict() for check in checks],
+    }
+    return payload
+
+
+def first_failed_hint(doctor_result: dict[str, Any]) -> str:
+    for check in doctor_result.get("checks", []):
+        if not check.get("ok"):
+            return check.get("hint") or check.get("message") or ""
+    return ""
+
+
+def check_patchrelay_server(base_url: str, token: str) -> SetupStatusCheck:
+    args = argparse.Namespace(url=base_url, token=token)
+    try:
+        payload = request_json(args, "GET", "/health")
+    except SystemExit as exc:
+        return SetupStatusCheck(
+            "patchrelay_server",
+            False,
+            str(exc),
+            f"Run patchrelay serve --config patchrelay.yaml and check {base_url}.",
+        )
+    status = payload.get("status")
+    return SetupStatusCheck(
+        "patchrelay_server",
+        status == "ok",
+        f"health status: {status or 'unknown'}",
+        "" if status == "ok" else f"Check PatchRelay server at {base_url}.",
+    )
+
+
+def check_openclaw_gateway(gateway_url: str, gateway_token: str) -> SetupStatusCheck:
+    args = argparse.Namespace(gateway_url=gateway_url, gateway_token=gateway_token)
+    try:
+        request_openclaw_json(args, "patchrelay_get_task", {"taskId": "__patchrelay_status_probe__"})
+    except SystemExit as exc:
+        message = str(exc)
+        if "404" in message:
+            return SetupStatusCheck(
+                "openclaw_gateway",
+                True,
+                "gateway accepted patchrelay_get_task",
+            )
+        return SetupStatusCheck(
+            "openclaw_gateway",
+            False,
+            message,
+            "Start OpenClaw Gateway and run patchrelay openclaw apply --config patchrelay.yaml --apply.",
+        )
+    return SetupStatusCheck("openclaw_gateway", True, "gateway accepted patchrelay_get_task")
+
+
 def request_json(
     args: argparse.Namespace,
     method: str,
@@ -494,6 +604,15 @@ def print_setup_preview(preview: Any, *, config_exists: bool) -> None:
     print(f"test command: {' '.join(preview.test_command)}")
     print(f"server: http://{preview.server_host}:{preview.server_port}")
     print()
+
+
+def print_setup_status(result: dict[str, Any]) -> None:
+    for check in result["checks"]:
+        status = "ok" if check["ok"] else "fail"
+        print(f"[{status}] {check['name']}: {check['message']}")
+        if check.get("hint"):
+            print(f"hint: {check['hint']}")
+    print(f"overall: {'ok' if result['ok'] else 'fail'}")
 
 
 def print_smoke_summary(payload: dict[str, Any]) -> None:

@@ -142,6 +142,14 @@ uv run patchrelay setup --config .\patchrelay.yaml
 uv run patchrelay setup --config .\patchrelay.yaml --yes
 ```
 
+只检查当前配置状态，不修改任何内容：
+
+```powershell
+uv run patchrelay setup status --config .\patchrelay.yaml
+```
+
+`setup status` 会检查 config、doctor、PatchRelay `/health` 和 OpenClaw Gateway 工具可达性。
+
 `patchrelay init` 会自动探测当前 Git 仓库、当前分支、可用 worker 命令、默认测试命令，并写入随机本地 bearer token。
 
 脚本化配置时可以显式传入参数：
