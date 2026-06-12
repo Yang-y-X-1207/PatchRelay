@@ -128,6 +128,14 @@ cd C:\Users\57826\IdeaProjects\PatchRelay\PatchRelay\server
 uv run patchrelay init --config .\patchrelay.yaml
 ```
 
+使用只问 yes/no 的引导式配置：
+
+```powershell
+uv run patchrelay setup --config .\patchrelay.yaml
+```
+
+`patchrelay setup` 会使用自动探测出的默认值，并且只在写入配置、运行 doctor、应用 OpenClaw 设置、运行 Gateway smoke test 前询问 yes/no。
+
 `patchrelay init` 会自动探测当前 Git 仓库、当前分支、可用 worker 命令、默认测试命令，并写入随机本地 bearer token。
 
 脚本化配置时可以显式传入参数：
@@ -273,6 +281,19 @@ uv run patchrelay openclaw apply --config .\patchrelay.yaml
 ```powershell
 uv run patchrelay openclaw apply --config .\patchrelay.yaml --apply
 ```
+
+通过 OpenClaw Gateway 执行 smoke test：
+
+```powershell
+uv run patchrelay smoke `
+  --config .\patchrelay.yaml `
+  --via openclaw `
+  --worker fake `
+  --gateway-url http://127.0.0.1:19001 `
+  --gateway-token openclaw-local-token
+```
+
+该命令会通过 Gateway `/tools/invoke` 调用 `patchrelay_submit_task` 和 `patchrelay_get_task`。执行前需要先启动 PatchRelay server 和 OpenClaw Gateway。
 
 构建并校验插件：
 

@@ -128,6 +128,14 @@ cd C:\Users\57826\IdeaProjects\PatchRelay\PatchRelay\server
 uv run patchrelay init --config .\patchrelay.yaml
 ```
 
+For a guided yes/no setup:
+
+```powershell
+uv run patchrelay setup --config .\patchrelay.yaml
+```
+
+`patchrelay setup` uses detected defaults and only asks yes/no questions before writing config, running doctor checks, applying OpenClaw setup, or running a Gateway smoke test.
+
 `patchrelay init` detects the current Git repository, current branch, available worker commands, a default test command, and writes a random local bearer token.
 
 For scripted setup, pass explicit values:
@@ -273,6 +281,19 @@ Apply the OpenClaw setup:
 ```powershell
 uv run patchrelay openclaw apply --config .\patchrelay.yaml --apply
 ```
+
+Run a smoke test through OpenClaw Gateway:
+
+```powershell
+uv run patchrelay smoke `
+  --config .\patchrelay.yaml `
+  --via openclaw `
+  --worker fake `
+  --gateway-url http://127.0.0.1:19001 `
+  --gateway-token openclaw-local-token
+```
+
+This calls `patchrelay_submit_task` and `patchrelay_get_task` through Gateway `/tools/invoke`. PatchRelay server and OpenClaw Gateway must already be running.
 
 Build and validate the plugin:
 

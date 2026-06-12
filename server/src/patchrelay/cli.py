@@ -71,11 +71,23 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--test-command", help='Default test command, for example "python -m pytest".')
     init.add_argument("--token", help="Bearer token to write into the config. Defaults to a generated token.")
 
+    setup = subcommands.add_parser("setup", help="Interactive yes/no guided local setup.")
+    setup.add_argument("--config", default="patchrelay.yaml")
+    setup.add_argument("--force", action="store_true", help="Allow replacing an existing configuration after confirmation.")
+    setup.add_argument("--worker", choices=["fake", "codex", "claude"], default="fake")
+    setup.add_argument("--gateway-url", default=os.getenv("OPENCLAW_GATEWAY_URL", "http://127.0.0.1:19001"))
+    setup.add_argument("--gateway-token", default=os.getenv("OPENCLAW_GATEWAY_TOKEN", "openclaw-local-token"))
+    setup.add_argument("--timeout", type=float, default=300)
+    setup.add_argument("--interval", type=float, default=1)
+
     smoke = subcommands.add_parser("smoke", help="Submit a minimal task to a running PatchRelay server.")
     smoke.add_argument("--config", default="patchrelay.yaml")
     smoke.add_argument("--worker", choices=["fake", "codex", "claude"], default="fake")
+    smoke.add_argument("--via", choices=["patchrelay", "openclaw"], default="patchrelay")
     smoke.add_argument("--url")
     smoke.add_argument("--token")
+    smoke.add_argument("--gateway-url", default=os.getenv("OPENCLAW_GATEWAY_URL", "http://127.0.0.1:19001"))
+    smoke.add_argument("--gateway-token", default=os.getenv("OPENCLAW_GATEWAY_TOKEN", "openclaw-local-token"))
     smoke.add_argument("--timeout", type=float, default=300)
     smoke.add_argument("--interval", type=float, default=1)
     smoke.add_argument("--json", action="store_true", help="Print raw JSON.")
@@ -167,6 +179,10 @@ def main() -> None:
         print_init_result(result)
         return
 
+    if args.command == "setup":
+        run_setup(args)
+        return
+
     if args.command == "smoke":
         try:
             settings = load_settings(args.config)
@@ -175,6 +191,21 @@ def main() -> None:
         url = args.url or f"http://{settings.server.host}:{settings.server.port}"
         token = args.token or settings.server.token
         plan = smoke_plan(args.worker)
+        if args.via == "openclaw":
+            gateway_args = argparse.Namespace(
+                gateway_url=args.gateway_url,
+                gateway_token=args.gateway_token,
+                instruction=plan.instruction,
+                worker=plan.worker,
+                test_profile="default",
+                timeout=args.timeout,
+                interval=args.interval,
+            )
+            payload = openclaw_submit_task(gateway_args)
+            task_id = extract_task_id(payload)
+            payload = wait_for_openclaw_task(gateway_args, task_id)
+            print_json(payload) if args.json else print_smoke_summary(payload)
+            return
         client_args = argparse.Namespace(
             url=url,
             token=token,
@@ -234,6 +265,81 @@ def parse_test_command(value: str | None) -> list[str] | None:
     return command
 
 
+def ask_yes_no(prompt: str, *, default: bool = True, input_func: Any = input) -> bool:
+    suffix = "Y/n" if default else "y/N"
+    while True:
+        answer = input_func(f"{prompt} [{suffix}] ").strip().lower()
+        if not answer:
+            return default
+        if answer in {"y", "yes"}:
+            return True
+        if answer in {"n", "no"}:
+            return False
+        print("Please answer yes or no.")
+
+
+def run_setup(args: argparse.Namespace, input_func: Any = input) -> None:
+    print("PatchRelay setup")
+    print("This flow only asks yes/no questions and uses detected defaults.")
+    print()
+
+    config_exists = os.path.exists(args.config)
+    if config_exists and not args.force:
+        if not ask_yes_no(f"{args.config} already exists. Overwrite it?", default=False, input_func=input_func):
+            print("setup stopped: existing config kept")
+            return
+    elif config_exists and args.force:
+        if not ask_yes_no(f"Overwrite existing {args.config}?", default=True, input_func=input_func):
+            print("setup stopped: existing config kept")
+            return
+
+    if not ask_yes_no(f"Generate PatchRelay config at {args.config}?", default=True, input_func=input_func):
+        print("setup stopped before config generation")
+        return
+
+    try:
+        init_result = init_config(args.config, force=True)
+    except OnboardingError as exc:
+        raise SystemExit(str(exc)) from exc
+    print_init_result(init_result)
+
+    settings = init_result.settings
+    if ask_yes_no("Run doctor checks now?", default=True, input_func=input_func):
+        doctor_result = run_doctor(settings)
+        print_doctor(doctor_result)
+        if not doctor_result["ok"] and not ask_yes_no("Doctor failed. Continue anyway?", default=False, input_func=input_func):
+            print("setup stopped after doctor failure")
+            return
+
+    if ask_yes_no("Apply OpenClaw plugin setup now?", default=False, input_func=input_func):
+        results = apply_openclaw_config(settings)
+        print_openclaw_apply_results(results)
+        if not all(result.ok for result in results):
+            print("setup stopped after OpenClaw setup failure")
+            return
+    else:
+        print("OpenClaw setup skipped. Dry-run plan:")
+        print_openclaw_apply_plan(build_openclaw_apply_steps(settings))
+
+    if ask_yes_no("Run smoke test through OpenClaw Gateway now?", default=False, input_func=input_func):
+        plan = smoke_plan(args.worker)
+        gateway_args = argparse.Namespace(
+            gateway_url=args.gateway_url,
+            gateway_token=args.gateway_token,
+            instruction=plan.instruction,
+            worker=plan.worker,
+            test_profile="default",
+            timeout=args.timeout,
+            interval=args.interval,
+        )
+        payload = openclaw_submit_task(gateway_args)
+        task_id = extract_task_id(payload)
+        payload = wait_for_openclaw_task(gateway_args, task_id)
+        print_smoke_summary(payload)
+
+    print("setup completed")
+
+
 def request_json(
     args: argparse.Namespace,
     method: str,
@@ -248,6 +354,31 @@ def request_json(
     except httpx.HTTPError as exc:
         raise SystemExit(f"PatchRelay request failed: {exc}") from exc
     return response.json()
+
+
+def request_openclaw_json(args: argparse.Namespace, tool_name: str, tool_args: dict[str, Any]) -> dict[str, Any]:
+    url = f"{args.gateway_url.rstrip('/')}/tools/invoke"
+    headers = {"Authorization": f"Bearer {args.gateway_token}"}
+    payload = {"name": tool_name, "args": tool_args}
+    try:
+        response = httpx.request("POST", url, headers=headers, json=payload, timeout=10)
+        response.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise SystemExit(f"OpenClaw Gateway request failed: {exc}") from exc
+    data = response.json()
+    if not isinstance(data, dict):
+        raise SystemExit("OpenClaw Gateway response was not a JSON object.")
+    return unwrap_openclaw_payload(data)
+
+
+def unwrap_openclaw_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    for key in ("result", "content", "data"):
+        nested = payload.get(key)
+        if isinstance(nested, dict) and ("taskId" in nested or "status" in nested or "artifacts" in nested):
+            return nested
+    if isinstance(payload.get("value"), dict):
+        return payload["value"]
+    return payload
 
 
 def submit_task(args: argparse.Namespace) -> dict[str, Any]:
@@ -267,6 +398,25 @@ def submit_task(args: argparse.Namespace) -> dict[str, Any]:
     return request_json(args, "POST", "/message:send", payload)
 
 
+def openclaw_submit_task(args: argparse.Namespace) -> dict[str, Any]:
+    return request_openclaw_json(
+        args,
+        "patchrelay_submit_task",
+        {
+            "instruction": args.instruction,
+            "worker": args.worker,
+            "testProfile": args.test_profile,
+        },
+    )
+
+
+def extract_task_id(payload: dict[str, Any]) -> str:
+    task_id = payload.get("taskId")
+    if isinstance(task_id, str) and task_id:
+        return task_id
+    raise SystemExit("OpenClaw Gateway response did not include taskId.")
+
+
 def wait_for_task(args: argparse.Namespace, task_id: str) -> dict[str, Any]:
     deadline = time.monotonic() + args.timeout
     while time.monotonic() < deadline:
@@ -275,6 +425,16 @@ def wait_for_task(args: argparse.Namespace, task_id: str) -> dict[str, Any]:
             return payload
         time.sleep(args.interval)
     raise SystemExit(f"Timed out waiting for task {task_id}")
+
+
+def wait_for_openclaw_task(args: argparse.Namespace, task_id: str) -> dict[str, Any]:
+    deadline = time.monotonic() + args.timeout
+    while time.monotonic() < deadline:
+        payload = request_openclaw_json(args, "patchrelay_get_task", {"taskId": task_id})
+        if payload["status"] in {"completed", "failed", "canceled"}:
+            return payload
+        time.sleep(args.interval)
+    raise SystemExit(f"Timed out waiting for OpenClaw task {task_id}")
 
 
 def print_task_summary(payload: dict[str, Any]) -> None:
