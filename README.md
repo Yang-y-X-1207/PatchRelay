@@ -121,12 +121,16 @@ npm run build
 
 ## PatchRelay Configuration
 
-Create a server config:
+Generate a server config:
 
 ```powershell
 cd C:\Users\57826\IdeaProjects\PatchRelay\PatchRelay\server
-Copy-Item .\examples\patchrelay.yaml .\patchrelay.yaml
+uv run patchrelay init --config .\patchrelay.yaml
 ```
+
+`patchrelay init` detects the current Git repository, current branch, available worker commands, a default test command, and writes a random local bearer token.
+
+You can still copy `server/examples/patchrelay.yaml` manually if you want to start from the sample file.
 
 Example `patchrelay.yaml`:
 
@@ -193,6 +197,12 @@ Expected `doctor` checks:
 
 ## Local CLI Usage
 
+Run a local smoke test against a running PatchRelay server:
+
+```powershell
+uv run patchrelay smoke --config .\patchrelay.yaml --worker fake
+```
+
 Submit a fake-worker task:
 
 ```powershell
@@ -230,6 +240,13 @@ uv run patchrelay cleanup --config .\patchrelay.yaml --force
 ```
 
 ## OpenClaw Integration
+
+Print OpenClaw setup commands from the current PatchRelay config:
+
+```powershell
+cd C:\Users\57826\IdeaProjects\PatchRelay\PatchRelay\server
+uv run patchrelay openclaw --config .\patchrelay.yaml
+```
 
 Build and validate the plugin:
 
