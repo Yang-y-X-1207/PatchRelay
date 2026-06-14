@@ -134,7 +134,7 @@ For a guided yes/no setup:
 uv run patchrelay setup --config .\patchrelay.yaml
 ```
 
-`patchrelay setup` prints detected defaults and only asks yes/no questions before writing config, running doctor checks, applying OpenClaw setup, or running a Gateway smoke test.
+`patchrelay setup` prints detected defaults and only asks yes/no questions before writing config, repairing an existing config, running doctor checks, applying OpenClaw setup, or running a Gateway smoke test. When the config already exists, setup previews repairable issues first and only writes changes after confirmation.
 
 For demos and scripts, accept the default yes/no choices:
 
@@ -149,6 +149,18 @@ uv run patchrelay setup status --config .\patchrelay.yaml
 ```
 
 `setup status` checks the config, doctor checks, PatchRelay `/health`, and OpenClaw Gateway tool reachability.
+
+Preview repairs for common local config issues:
+
+```powershell
+uv run patchrelay setup repair --config .\patchrelay.yaml
+```
+
+`setup repair` can create a missing config, replace a blank or default token, fix missing repo/base branch values, restore worker commands, add the default test profile, and fill default limits. It is dry-run by default; add `--apply` to write the repaired YAML:
+
+```powershell
+uv run patchrelay setup repair --config .\patchrelay.yaml --apply
+```
 
 `patchrelay init` detects the current Git repository, current branch, available worker commands, a default test command, and writes a random local bearer token.
 

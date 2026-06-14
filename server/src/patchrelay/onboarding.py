@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import secrets
+import shlex
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -41,6 +42,51 @@ class SetupPreview:
     test_command: list[str]
     server_host: str = "127.0.0.1"
     server_port: int = 8787
+
+
+@dataclass(frozen=True)
+class ConfigRepairAction:
+    kind: str
+    target: str
+    message: str
+    before: str = ""
+    after: str = ""
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "kind": self.kind,
+            "target": self.target,
+            "message": self.message,
+            "before": self.before,
+            "after": self.after,
+        }
+
+
+@dataclass(frozen=True)
+class ConfigRepairPlan:
+    config_path: Path
+    data: dict[str, Any] | None
+    actions: list[ConfigRepairAction]
+    errors: list[str]
+    applied: bool = False
+
+    @property
+    def ok(self) -> bool:
+        return not self.errors
+
+    @property
+    def changed(self) -> bool:
+        return bool(self.actions)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "ok": self.ok,
+            "configPath": str(self.config_path),
+            "changed": self.changed,
+            "applied": self.applied,
+            "actions": [action.to_dict() for action in self.actions],
+            "errors": self.errors,
+        }
 
 
 @dataclass(frozen=True)
@@ -91,12 +137,21 @@ def init_config(
         test_command=test_command,
     )
     selected_token = token or generate_token()
-    settings = Settings.model_validate(
+    settings = settings_from_preview(preview, selected_token)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    overwritten = path.exists()
+    path.write_text(yaml.safe_dump(settings_to_yaml(settings), sort_keys=False), encoding="utf-8")
+    return InitConfigResult(config_path=path, settings=settings, overwritten=overwritten)
+
+
+def settings_from_preview(preview: SetupPreview, token: str) -> Settings:
+    return Settings.model_validate(
         {
             "server": {
                 "host": preview.server_host,
                 "port": preview.server_port,
-                "token": selected_token,
+                "token": token,
             },
             "repo": {
                 "path": str(preview.repo_path),
@@ -121,10 +176,337 @@ def init_config(
         }
     )
 
+
+def repair_config(config_path: str | Path = "patchrelay.yaml", *, apply: bool = False) -> ConfigRepairPlan:
+    plan = build_config_repair_plan(config_path)
+    if not apply or not plan.ok or plan.data is None or not plan.changed:
+        return plan
+
+    path = Path(config_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    overwritten = path.exists()
-    path.write_text(yaml.safe_dump(settings_to_yaml(settings), sort_keys=False), encoding="utf-8")
-    return InitConfigResult(config_path=path, settings=settings, overwritten=overwritten)
+    try:
+        path.write_text(yaml.safe_dump(plan.data, sort_keys=False), encoding="utf-8")
+    except OSError as exc:
+        return ConfigRepairPlan(
+            config_path=plan.config_path,
+            data=plan.data,
+            actions=plan.actions,
+            errors=[*plan.errors, f"Could not write {path}: {exc}"],
+        )
+    return ConfigRepairPlan(
+        config_path=plan.config_path,
+        data=plan.data,
+        actions=plan.actions,
+        errors=plan.errors,
+        applied=True,
+    )
+
+
+def build_config_repair_plan(config_path: str | Path = "patchrelay.yaml") -> ConfigRepairPlan:
+    path = Path(config_path)
+    actions: list[ConfigRepairAction] = []
+    errors: list[str] = []
+
+    if not path.exists():
+        preview = preview_setup(path)
+        settings = settings_from_preview(preview, generate_token())
+        data = settings_to_yaml(settings)
+        actions.append(
+            ConfigRepairAction(
+                kind="create",
+                target=str(path),
+                message="Create config with detected local defaults.",
+                after=str(path),
+            )
+        )
+        return ConfigRepairPlan(path, data, actions, errors)
+
+    try:
+        loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        return ConfigRepairPlan(path, None, actions, [f"Could not read {path}: {exc}"])
+    except yaml.YAMLError as exc:
+        return ConfigRepairPlan(path, None, actions, [f"Invalid YAML in {path}: {exc}"])
+
+    if loaded is None:
+        data: dict[str, Any] = {}
+    elif isinstance(loaded, dict):
+        data = loaded
+    else:
+        return ConfigRepairPlan(path, None, actions, [f"{path} must contain a YAML mapping"])
+
+    repair_server(data, actions)
+    repo_path = repair_repo(data, actions, errors)
+    repair_worker(data, actions)
+    repair_tests(data, actions, repo_path)
+    repair_limits(data, actions)
+
+    try:
+        Settings.model_validate(data)
+    except Exception as exc:
+        errors.append(f"Config still does not validate after planned repairs: {exc}")
+
+    return ConfigRepairPlan(path, data, actions, errors)
+
+
+def repair_server(data: dict[str, Any], actions: list[ConfigRepairAction]) -> None:
+    server = ensure_mapping(data, "server", actions)
+    host = server.get("host")
+    if not isinstance(host, str) or not host.strip():
+        replace_value(server, "host", "127.0.0.1", "server.host", actions, "Set default loopback host.")
+    port = server.get("port")
+    if not isinstance(port, int) or port <= 0:
+        replace_value(server, "port", 8787, "server.port", actions, "Set default server port.")
+
+    token = server.get("token")
+    if not isinstance(token, str) or not token.strip() or token == "change-me":
+        replace_value(
+            server,
+            "token",
+            generate_token(),
+            "server.token",
+            actions,
+            "Replace blank/default token with a generated token.",
+            redact=True,
+        )
+
+
+def repair_repo(data: dict[str, Any], actions: list[ConfigRepairAction], errors: list[str]) -> Path:
+    repo = ensure_mapping(data, "repo", actions)
+    detected_repo = detect_git_repo(Path.cwd())
+    configured_path = repo.get("path")
+    repo_path = path_from_config_value(configured_path)
+    if repo_path is None or not repo_path.exists() or detect_git_repo(repo_path) is None:
+        if detected_repo is None:
+            errors.append("Could not detect a Git repository for repo.path.")
+            repo_path = repo_path or Path.cwd()
+        else:
+            replace_value(
+                repo,
+                "path",
+                str(detected_repo),
+                "repo.path",
+                actions,
+                "Point repo.path at the detected Git repository.",
+            )
+            repo_path = detected_repo
+
+    state_dir = repo.get("state_dir")
+    if not isinstance(state_dir, str) or not state_dir.strip():
+        replace_value(repo, "state_dir", ".patchrelay", "repo.state_dir", actions, "Set default PatchRelay state dir.")
+
+    base_branch = repo.get("base_branch")
+    if not isinstance(base_branch, str) or not base_branch.strip() or not git_ref_exists(repo_path, base_branch):
+        detected_branch = detect_current_branch(repo_path) or "main"
+        replace_value(
+            repo,
+            "base_branch",
+            detected_branch,
+            "repo.base_branch",
+            actions,
+            "Use a base branch that exists in the configured repository.",
+        )
+
+    return repo_path
+
+
+def repair_worker(data: dict[str, Any], actions: list[ConfigRepairAction]) -> None:
+    worker = ensure_mapping(data, "worker", actions)
+    default_worker = worker.get("default")
+    if default_worker not in {"auto", "fake", "codex", "claude"}:
+        replace_value(
+            worker,
+            "default",
+            detect_default_worker(),
+            "worker.default",
+            actions,
+            "Set default worker to an available local default.",
+        )
+    ensure_command_value(worker, "codex_command", "codex", "worker.codex_command", actions, "Set default Codex command.")
+    ensure_command_value(worker, "claude_command", "claude", "worker.claude_command", actions, "Set default Claude command.")
+
+
+def repair_tests(data: dict[str, Any], actions: list[ConfigRepairAction], repo_path: Path) -> None:
+    tests = ensure_mapping(data, "tests", actions)
+    default_profile = tests.get("default")
+    command = default_profile.get("command") if isinstance(default_profile, dict) else None
+    if isinstance(command, str) and command.strip():
+        try:
+            repaired_command = shlex.split(command)
+        except ValueError:
+            repaired_command = detect_test_command(repo_path)
+            message = "Replace invalid default test command with detected command."
+        else:
+            message = "Convert default test command from string to argv list."
+        tests["default"] = {"command": repaired_command}
+        actions.append(
+            ConfigRepairAction(
+                kind="update",
+                target="tests.default.command",
+                message=message,
+                before=command,
+                after=" ".join(repaired_command),
+            )
+        )
+        return
+    if not isinstance(default_profile, dict) or not isinstance(command, list) or not command:
+        detected_command = detect_test_command(repo_path)
+        tests["default"] = {"command": detected_command}
+        actions.append(
+            ConfigRepairAction(
+                kind="update",
+                target="tests.default.command",
+                message="Set default test profile command.",
+                before=value_to_display(default_profile),
+                after=" ".join(detected_command),
+            )
+        )
+
+
+def repair_limits(data: dict[str, Any], actions: list[ConfigRepairAction]) -> None:
+    limits = ensure_mapping(data, "limits", actions)
+    ensure_positive_int(
+        limits,
+        "max_log_bytes",
+        1_048_576,
+        "limits.max_log_bytes",
+        actions,
+        "Set default log capture limit.",
+    )
+    ensure_positive_int(
+        limits,
+        "max_diff_bytes",
+        5_242_880,
+        "limits.max_diff_bytes",
+        actions,
+        "Set default diff capture limit.",
+    )
+    ensure_positive_int(
+        limits,
+        "task_timeout_seconds",
+        3_600,
+        "limits.task_timeout_seconds",
+        actions,
+        "Set default task timeout.",
+    )
+
+
+def ensure_mapping(
+    data: dict[str, Any],
+    key: str,
+    actions: list[ConfigRepairAction],
+) -> dict[str, Any]:
+    current = data.get(key)
+    if isinstance(current, dict):
+        return current
+    data[key] = {}
+    actions.append(
+        ConfigRepairAction(
+            kind="update",
+            target=key,
+            message=f"Create {key} mapping.",
+            before=value_to_display(current),
+            after="{}",
+        )
+    )
+    return data[key]
+
+
+def ensure_value(
+    data: dict[str, Any],
+    key: str,
+    value: Any,
+    target: str,
+    actions: list[ConfigRepairAction],
+    message: str,
+) -> None:
+    if key not in data:
+        replace_value(data, key, value, target, actions, message)
+
+
+def ensure_command_value(
+    data: dict[str, Any],
+    key: str,
+    value: str,
+    target: str,
+    actions: list[ConfigRepairAction],
+    message: str,
+) -> None:
+    current = data.get(key)
+    if isinstance(current, str) and current.strip():
+        return
+    if isinstance(current, list) and current and all(isinstance(part, str) and part for part in current):
+        return
+    replace_value(data, key, value, target, actions, message)
+
+
+def ensure_positive_int(
+    data: dict[str, Any],
+    key: str,
+    value: int,
+    target: str,
+    actions: list[ConfigRepairAction],
+    message: str,
+) -> None:
+    current = data.get(key)
+    if isinstance(current, int) and current > 0:
+        return
+    replace_value(data, key, value, target, actions, message)
+
+
+def replace_value(
+    data: dict[str, Any],
+    key: str,
+    value: Any,
+    target: str,
+    actions: list[ConfigRepairAction],
+    message: str,
+    *,
+    redact: bool = False,
+) -> None:
+    before = "<redacted>" if redact and key in data else value_to_display(data.get(key))
+    data[key] = value
+    after = "<generated>" if redact else value_to_display(value)
+    actions.append(
+        ConfigRepairAction(
+            kind="update",
+            target=target,
+            message=message,
+            before=before,
+            after=after,
+        )
+    )
+
+
+def path_from_config_value(value: Any) -> Path | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return Path(value).expanduser().resolve()
+
+
+def git_ref_exists(repo_path: Path, ref: str) -> bool:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--verify", ref],
+            cwd=repo_path,
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
+def value_to_display(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, list):
+        return " ".join(str(part) for part in value)
+    return str(value)
 
 
 def preview_setup(
