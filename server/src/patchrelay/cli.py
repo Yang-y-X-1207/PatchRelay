@@ -75,11 +75,12 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--token", help="Bearer token to write into the config. Defaults to a generated token.")
 
     setup = subcommands.add_parser("setup", help="Interactive yes/no guided local setup.")
-    setup.add_argument("action", nargs="?", choices=["status", "repair"])
+    setup.add_argument("action", nargs="?", choices=["status", "repair", "verify"])
     setup.add_argument("--config", default="patchrelay.yaml")
     setup.add_argument("--force", action="store_true", help="Allow replacing an existing configuration after confirmation.")
     setup.add_argument("--yes", action="store_true", help="Accept default yes/no answers.")
     setup.add_argument("--apply", action="store_true", help="Apply setup repair changes. Without this, repair is dry-run.")
+    setup.add_argument("--json", action="store_true", help="Print raw JSON for setup status, repair, or verify.")
     setup.add_argument("--worker", choices=["fake", "codex", "claude"], default="fake")
     setup.add_argument("--gateway-url", default=os.getenv("OPENCLAW_GATEWAY_URL", "http://127.0.0.1:19001"))
     setup.add_argument("--gateway-token", default=os.getenv("OPENCLAW_GATEWAY_TOKEN", "openclaw-local-token"))
@@ -188,11 +189,15 @@ def main() -> None:
     if args.command == "setup":
         if args.action == "status":
             result = run_setup_status(args)
-            print_setup_status(result)
+            print_json(result) if args.json else print_setup_status(result)
             raise SystemExit(0 if result["ok"] else 1)
         if args.action == "repair":
             result = repair_config(args.config, apply=args.apply).to_dict()
-            print_setup_repair(result)
+            print_json(result) if args.json else print_setup_repair(result)
+            raise SystemExit(0 if result["ok"] else 1)
+        if args.action == "verify":
+            result = run_setup_verify(args)
+            print_json(result) if args.json else print_setup_verify(result)
             raise SystemExit(0 if result["ok"] else 1)
         run_setup(args)
         return
@@ -453,17 +458,50 @@ def run_setup_status(args: argparse.Namespace) -> dict[str, Any]:
             )
         )
         base_url = f"http://{settings.server.host}:{settings.server.port}"
-        checks.append(check_patchrelay_server(base_url, settings.server.token))
+        checks.append(check_patchrelay_server(base_url, settings.server.token, args.config))
     else:
         checks.append(SetupStatusCheck("doctor", False, "skipped because config failed"))
         checks.append(SetupStatusCheck("patchrelay_server", False, "skipped because config failed"))
 
-    checks.append(check_openclaw_gateway(args.gateway_url, args.gateway_token))
+    checks.append(check_openclaw_gateway(args.gateway_url, args.gateway_token, args.config))
     payload = {
         "ok": all(check.ok for check in checks),
+        "configPath": str(args.config),
         "checks": [check.to_dict() for check in checks],
     }
     return payload
+
+
+def run_setup_verify(args: argparse.Namespace) -> dict[str, Any]:
+    status = run_setup_status(args)
+    repair = repair_config(args.config, apply=False).to_dict()
+    recommendations = setup_verify_recommendations(args.config, status, repair)
+    payload = {
+        "ok": bool(status["ok"] and repair["ok"] and not repair["changed"]),
+        "configPath": str(args.config),
+        "status": status,
+        "repair": repair,
+        "recommendations": recommendations,
+    }
+    return payload
+
+
+def setup_verify_recommendations(config_path: str, status: dict[str, Any], repair: dict[str, Any]) -> list[str]:
+    recommendations: list[str] = []
+
+    if not repair["ok"]:
+        recommendations.append(f"Fix {config_path} manually, then rerun patchrelay setup verify.")
+    elif repair["changed"]:
+        recommendations.append(f"Run patchrelay setup repair --config {config_path} --apply.")
+
+    for check in status.get("checks", []):
+        if check.get("ok"):
+            continue
+        hint = check.get("hint") or check.get("message")
+        if hint and hint not in recommendations:
+            recommendations.append(hint)
+
+    return recommendations
 
 
 def first_failed_hint(doctor_result: dict[str, Any]) -> str:
@@ -473,7 +511,7 @@ def first_failed_hint(doctor_result: dict[str, Any]) -> str:
     return ""
 
 
-def check_patchrelay_server(base_url: str, token: str) -> SetupStatusCheck:
+def check_patchrelay_server(base_url: str, token: str, config_path: str) -> SetupStatusCheck:
     args = argparse.Namespace(url=base_url, token=token)
     try:
         payload = request_json(args, "GET", "/health")
@@ -482,7 +520,7 @@ def check_patchrelay_server(base_url: str, token: str) -> SetupStatusCheck:
             "patchrelay_server",
             False,
             str(exc),
-            f"Run patchrelay serve --config patchrelay.yaml and check {base_url}.",
+            f"Run patchrelay serve --config {config_path} and check {base_url}.",
         )
     status = payload.get("status")
     return SetupStatusCheck(
@@ -493,7 +531,7 @@ def check_patchrelay_server(base_url: str, token: str) -> SetupStatusCheck:
     )
 
 
-def check_openclaw_gateway(gateway_url: str, gateway_token: str) -> SetupStatusCheck:
+def check_openclaw_gateway(gateway_url: str, gateway_token: str, config_path: str) -> SetupStatusCheck:
     args = argparse.Namespace(gateway_url=gateway_url, gateway_token=gateway_token)
     try:
         request_openclaw_json(args, "patchrelay_get_task", {"taskId": "__patchrelay_status_probe__"})
@@ -509,7 +547,7 @@ def check_openclaw_gateway(gateway_url: str, gateway_token: str) -> SetupStatusC
             "openclaw_gateway",
             False,
             message,
-            "Start OpenClaw Gateway and run patchrelay openclaw apply --config patchrelay.yaml --apply.",
+            f"Start OpenClaw Gateway and run patchrelay openclaw apply --config {config_path} --apply.",
         )
     return SetupStatusCheck("openclaw_gateway", True, "gateway accepted patchrelay_get_task")
 
@@ -659,6 +697,8 @@ def print_setup_preview(preview: Any, *, config_exists: bool) -> None:
 
 
 def print_setup_status(result: dict[str, Any]) -> None:
+    if result.get("configPath"):
+        print(f"config: {result['configPath']}")
     for check in result["checks"]:
         status = "ok" if check["ok"] else "fail"
         print(f"[{status}] {check['name']}: {check['message']}")
@@ -692,6 +732,39 @@ def print_setup_repair(result: dict[str, Any]) -> None:
     if not result["applied"]:
         print("add --apply to write these repairs")
     print("overall: ok")
+
+
+def print_setup_verify(result: dict[str, Any]) -> None:
+    print("setup verify")
+    if result.get("configPath"):
+        print(f"config: {result['configPath']}")
+    print()
+    print("status:")
+    for check in result["status"]["checks"]:
+        status = "ok" if check["ok"] else "fail"
+        print(f"[{status}] {check['name']}: {check['message']}")
+        if check.get("hint"):
+            print(f"hint: {check['hint']}")
+
+    print()
+    print("repair:")
+    repair = result["repair"]
+    if repair["errors"]:
+        for error in repair["errors"]:
+            print(f"[fail] {error}")
+    elif repair["actions"]:
+        for action in repair["actions"]:
+            print(f"[{action['kind']}] {action['target']}: {action['message']}")
+    else:
+        print("no repairs needed")
+
+    if result["recommendations"]:
+        print()
+        print("recommendations:")
+        for recommendation in result["recommendations"]:
+            print(f"- {recommendation}")
+
+    print(f"overall: {'ok' if result['ok'] else 'fail'}")
 
 
 def print_smoke_summary(payload: dict[str, Any]) -> None:

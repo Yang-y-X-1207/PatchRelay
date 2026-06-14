@@ -186,6 +186,17 @@ def test_setup_repair_parser_accepts_apply() -> None:
     assert args.apply is True
 
 
+def test_setup_parser_accepts_json_for_automation_commands() -> None:
+    status_args = cli.build_parser().parse_args(["setup", "status", "--json"])
+    repair_args = cli.build_parser().parse_args(["setup", "repair", "--json"])
+    verify_args = cli.build_parser().parse_args(["setup", "verify", "--json"])
+
+    assert status_args.json is True
+    assert repair_args.json is True
+    assert verify_args.action == "verify"
+    assert verify_args.json is True
+
+
 def test_smoke_parser_accepts_worker_url_and_token() -> None:
     args = cli.build_parser().parse_args(
         [
@@ -687,6 +698,7 @@ def test_setup_status_reports_all_checks_ok(monkeypatch: pytest.MonkeyPatch) -> 
     result = cli.run_setup_status(args)
 
     assert result["ok"] is True
+    assert result["configPath"] == "patchrelay.yaml"
     assert [check["name"] for check in result["checks"]] == [
         "config",
         "doctor",
@@ -716,10 +728,194 @@ def test_setup_status_reports_config_failure(monkeypatch: pytest.MonkeyPatch) ->
     assert result["checks"][1]["message"] == "skipped because config failed"
 
 
+def test_setup_status_hints_use_selected_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = Settings()
+
+    monkeypatch.setattr(cli, "load_settings", lambda config: settings)
+    monkeypatch.setattr(cli, "run_doctor", lambda settings: {"ok": True, "checks": []})
+    monkeypatch.setattr(
+        cli,
+        "request_json",
+        lambda args, method, path, payload=None: (_ for _ in ()).throw(SystemExit("server down")),
+    )
+    monkeypatch.setattr(
+        cli,
+        "request_openclaw_json",
+        lambda args, tool_name, tool_args: (_ for _ in ()).throw(SystemExit("gateway down")),
+    )
+    args = cli.build_parser().parse_args(["setup", "status", "--config", "local.yaml"])
+
+    result = cli.run_setup_status(args)
+
+    assert "patchrelay serve --config local.yaml" in result["checks"][2]["hint"]
+    assert "patchrelay openclaw apply --config local.yaml --apply" in result["checks"][3]["hint"]
+
+
+def test_setup_status_main_prints_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys) -> None:
+    config = tmp_path / "patchrelay.yaml"
+    result = {
+        "ok": True,
+        "configPath": str(config),
+        "checks": [{"name": "config", "ok": True, "message": "loaded", "hint": ""}],
+    }
+
+    monkeypatch.setattr(cli, "run_setup_status", lambda args: result)
+    monkeypatch.setattr(cli.sys, "argv", ["patchrelay", "setup", "status", "--config", str(config), "--json"])
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+
+    output = capsys.readouterr().out
+    assert exc.value.code == 0
+    assert '"configPath"' in output
+    assert '"ok": true' in output
+    assert '"checks"' in output
+
+
+def test_setup_repair_main_prints_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys) -> None:
+    config = tmp_path / "patchrelay.yaml"
+
+    class Result:
+        def to_dict(self) -> dict:
+            return {
+                "ok": True,
+                "configPath": str(config),
+                "changed": False,
+                "applied": False,
+                "actions": [],
+                "errors": [],
+            }
+
+    monkeypatch.setattr(cli, "repair_config", lambda config_path, apply=False: Result())
+    monkeypatch.setattr(cli.sys, "argv", ["patchrelay", "setup", "repair", "--config", str(config), "--json"])
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+
+    output = capsys.readouterr().out
+    assert exc.value.code == 0
+    assert '"configPath"' in output
+    assert '"changed": false' in output
+
+
+def test_setup_verify_combines_status_repair_and_recommendations(monkeypatch: pytest.MonkeyPatch) -> None:
+    status = {
+        "ok": False,
+        "checks": [
+            {"name": "config", "ok": True, "message": "loaded", "hint": ""},
+            {"name": "patchrelay_server", "ok": False, "message": "down", "hint": "start server"},
+        ],
+    }
+    repair = {
+        "ok": True,
+        "configPath": "local.yaml",
+        "changed": True,
+        "applied": False,
+        "actions": [{"kind": "update", "target": "server.token", "message": "Replace token."}],
+        "errors": [],
+    }
+
+    class Result:
+        def to_dict(self) -> dict:
+            return repair
+
+    monkeypatch.setattr(cli, "run_setup_status", lambda args: status)
+    monkeypatch.setattr(cli, "repair_config", lambda config_path, apply=False: Result())
+    args = cli.build_parser().parse_args(["setup", "verify", "--config", "local.yaml"])
+
+    result = cli.run_setup_verify(args)
+
+    assert result["ok"] is False
+    assert result["configPath"] == "local.yaml"
+    assert result["status"] == status
+    assert result["repair"] == repair
+    assert result["recommendations"] == [
+        "Run patchrelay setup repair --config local.yaml --apply.",
+        "start server",
+    ]
+
+
+def test_setup_verify_ok_when_status_ok_and_no_repairs(monkeypatch: pytest.MonkeyPatch) -> None:
+    status = {"ok": True, "checks": [{"name": "config", "ok": True, "message": "loaded", "hint": ""}]}
+    repair = {
+        "ok": True,
+        "configPath": "local.yaml",
+        "changed": False,
+        "applied": False,
+        "actions": [],
+        "errors": [],
+    }
+
+    class Result:
+        def to_dict(self) -> dict:
+            return repair
+
+    monkeypatch.setattr(cli, "run_setup_status", lambda args: status)
+    monkeypatch.setattr(cli, "repair_config", lambda config_path, apply=False: Result())
+    args = cli.build_parser().parse_args(["setup", "verify", "--config", "local.yaml"])
+
+    result = cli.run_setup_verify(args)
+
+    assert result["ok"] is True
+    assert result["recommendations"] == []
+
+
+def test_setup_verify_main_prints_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys) -> None:
+    config = tmp_path / "patchrelay.yaml"
+    result = {
+        "ok": True,
+        "status": {"ok": True, "checks": []},
+        "repair": {"ok": True, "changed": False, "actions": [], "errors": []},
+        "recommendations": [],
+    }
+
+    monkeypatch.setattr(cli, "run_setup_verify", lambda args: result)
+    monkeypatch.setattr(cli.sys, "argv", ["patchrelay", "setup", "verify", "--config", str(config), "--json"])
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+
+    output = capsys.readouterr().out
+    assert exc.value.code == 0
+    assert '"status"' in output
+    assert '"recommendations": []' in output
+
+
+def test_print_setup_verify_includes_status_repair_and_recommendations(capsys) -> None:
+    cli.print_setup_verify(
+        {
+            "ok": False,
+            "configPath": "local.yaml",
+            "status": {
+                "ok": False,
+                "checks": [
+                    {"name": "patchrelay_server", "ok": False, "message": "down", "hint": "start server"}
+                ],
+            },
+            "repair": {
+                "ok": True,
+                "changed": True,
+                "actions": [{"kind": "update", "target": "server.token", "message": "Replace token."}],
+                "errors": [],
+            },
+            "recommendations": ["start server"],
+        }
+    )
+
+    output = capsys.readouterr().out
+    assert "setup verify" in output
+    assert "config: local.yaml" in output
+    assert "[fail] patchrelay_server: down" in output
+    assert "[update] server.token: Replace token." in output
+    assert "- start server" in output
+    assert "overall: fail" in output
+
+
 def test_print_setup_status_includes_hints(capsys) -> None:
     cli.print_setup_status(
         {
             "ok": False,
+            "configPath": "local.yaml",
             "checks": [
                 {
                     "name": "config",
@@ -732,6 +928,7 @@ def test_print_setup_status_includes_hints(capsys) -> None:
     )
 
     output = capsys.readouterr().out
+    assert "config: local.yaml" in output
     assert "[fail] config: missing" in output
     assert "hint: run setup" in output
     assert "overall: fail" in output

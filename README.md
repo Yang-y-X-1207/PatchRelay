@@ -150,6 +150,12 @@ uv run patchrelay setup status --config .\patchrelay.yaml
 
 `setup status` checks the config, doctor checks, PatchRelay `/health`, and OpenClaw Gateway tool reachability.
 
+For scripting or CI, print the same status as JSON:
+
+```powershell
+uv run patchrelay setup status --config .\patchrelay.yaml --json
+```
+
 Preview repairs for common local config issues:
 
 ```powershell
@@ -161,6 +167,20 @@ uv run patchrelay setup repair --config .\patchrelay.yaml
 ```powershell
 uv run patchrelay setup repair --config .\patchrelay.yaml --apply
 ```
+
+For scripting or CI, print repair plans and results as JSON:
+
+```powershell
+uv run patchrelay setup repair --config .\patchrelay.yaml --json
+```
+
+To combine status and repair checks in one non-destructive command:
+
+```powershell
+uv run patchrelay setup verify --config .\patchrelay.yaml
+```
+
+`setup verify` prints the status checks, repair plan, and recommended next steps. Add `--json` if you want a structured payload.
 
 `patchrelay init` detects the current Git repository, current branch, available worker commands, a default test command, and writes a random local bearer token.
 
