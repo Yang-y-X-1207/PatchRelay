@@ -20,6 +20,7 @@ from patchrelay.onboarding import (
     generate_openclaw_commands,
     init_config,
     preview_setup,
+    repair_config,
     smoke_plan,
 )
 
@@ -74,10 +75,11 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--token", help="Bearer token to write into the config. Defaults to a generated token.")
 
     setup = subcommands.add_parser("setup", help="Interactive yes/no guided local setup.")
-    setup.add_argument("action", nargs="?", choices=["status"])
+    setup.add_argument("action", nargs="?", choices=["status", "repair"])
     setup.add_argument("--config", default="patchrelay.yaml")
     setup.add_argument("--force", action="store_true", help="Allow replacing an existing configuration after confirmation.")
     setup.add_argument("--yes", action="store_true", help="Accept default yes/no answers.")
+    setup.add_argument("--apply", action="store_true", help="Apply setup repair changes. Without this, repair is dry-run.")
     setup.add_argument("--worker", choices=["fake", "codex", "claude"], default="fake")
     setup.add_argument("--gateway-url", default=os.getenv("OPENCLAW_GATEWAY_URL", "http://127.0.0.1:19001"))
     setup.add_argument("--gateway-token", default=os.getenv("OPENCLAW_GATEWAY_TOKEN", "openclaw-local-token"))
@@ -187,6 +189,10 @@ def main() -> None:
         if args.action == "status":
             result = run_setup_status(args)
             print_setup_status(result)
+            raise SystemExit(0 if result["ok"] else 1)
+        if args.action == "repair":
+            result = repair_config(args.config, apply=args.apply).to_dict()
+            print_setup_repair(result)
             raise SystemExit(0 if result["ok"] else 1)
         run_setup(args)
         return
@@ -303,25 +309,71 @@ def run_setup(args: argparse.Namespace, input_func: Any = input) -> None:
 
     config_exists = os.path.exists(args.config)
     if config_exists and not args.force:
-        if not setup_answer(args, f"{args.config} already exists. Overwrite it?", default=False, input_func=input_func):
-            print("setup stopped: existing config kept")
+        settings = repair_existing_setup_config(args, input_func=input_func)
+        if settings is None:
             return
     elif config_exists and args.force:
         if not setup_answer(args, f"Overwrite existing {args.config}?", default=True, input_func=input_func):
             print("setup stopped: existing config kept")
             return
+        settings = generate_setup_config(args, input_func=input_func)
+    else:
+        settings = generate_setup_config(args, input_func=input_func)
 
+    continue_setup(args, settings, input_func=input_func)
+
+
+def generate_setup_config(args: argparse.Namespace, *, input_func: Any) -> Any:
     if not setup_answer(args, f"Generate PatchRelay config at {args.config}?", default=True, input_func=input_func):
         print("setup stopped before config generation")
-        return
+        return None
 
     try:
         init_result = init_config(args.config, force=True)
     except OnboardingError as exc:
         raise SystemExit(str(exc)) from exc
     print_init_result(init_result)
+    return init_result.settings
 
-    settings = init_result.settings
+
+def repair_existing_setup_config(args: argparse.Namespace, *, input_func: Any) -> Any | None:
+    print(f"{args.config} already exists. Checking for repairable config issues.")
+    plan = repair_config(args.config, apply=False).to_dict()
+    print_setup_repair(plan)
+
+    if not plan["ok"]:
+        if not setup_answer(args, "Repair plan failed. Continue with existing config?", default=False, input_func=input_func):
+            print("setup stopped: existing config kept")
+            return None
+        return load_setup_settings(args.config)
+
+    if plan["changed"]:
+        if not setup_answer(args, f"Apply setup repairs to {args.config}?", default=True, input_func=input_func):
+            print("setup stopped: existing config kept without repair")
+            return None
+        applied = repair_config(args.config, apply=True).to_dict()
+        print_setup_repair(applied)
+        if not applied["ok"]:
+            print("setup stopped after repair failure")
+            return None
+    else:
+        print("using existing config")
+
+    return load_setup_settings(args.config)
+
+
+def load_setup_settings(config_path: str) -> Any:
+    try:
+        return load_settings(config_path)
+    except ConfigError as exc:
+        raise SystemExit(str(exc)) from exc
+
+
+def continue_setup(args: argparse.Namespace, settings: Any, *, input_func: Any) -> None:
+    if settings is None:
+        print("setup stopped before config generation")
+        return
+
     if setup_answer(args, "Run doctor checks now?", default=True, input_func=input_func):
         doctor_result = run_doctor(settings)
         print_doctor(doctor_result)
@@ -613,6 +665,33 @@ def print_setup_status(result: dict[str, Any]) -> None:
         if check.get("hint"):
             print(f"hint: {check['hint']}")
     print(f"overall: {'ok' if result['ok'] else 'fail'}")
+
+
+def print_setup_repair(result: dict[str, Any]) -> None:
+    mode = "applied" if result["applied"] else "dry-run"
+    print(f"setup repair: {mode}")
+    print(f"config: {result['configPath']}")
+
+    if result["errors"]:
+        for error in result["errors"]:
+            print(f"[fail] {error}")
+        print("overall: fail")
+        return
+
+    actions = result["actions"]
+    if not actions:
+        print("no repairs needed")
+        print("overall: ok")
+        return
+
+    for action in actions:
+        before = f" before={action['before']}" if action.get("before") else ""
+        after = f" after={action['after']}" if action.get("after") else ""
+        print(f"[{action['kind']}] {action['target']}: {action['message']}{before}{after}")
+
+    if not result["applied"]:
+        print("add --apply to write these repairs")
+    print("overall: ok")
 
 
 def print_smoke_summary(payload: dict[str, Any]) -> None:

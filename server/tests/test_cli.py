@@ -177,6 +177,15 @@ def test_setup_status_parser_accepts_gateway_options() -> None:
     assert args.gateway_token == "gateway-secret"
 
 
+def test_setup_repair_parser_accepts_apply() -> None:
+    args = cli.build_parser().parse_args(["setup", "repair", "--config", "local.yaml", "--apply"])
+
+    assert args.command == "setup"
+    assert args.action == "repair"
+    assert args.config == "local.yaml"
+    assert args.apply is True
+
+
 def test_smoke_parser_accepts_worker_url_and_token() -> None:
     args = cli.build_parser().parse_args(
         [
@@ -431,6 +440,127 @@ def test_setup_stops_when_user_declines_existing_config(tmp_path: Path, capsys) 
     assert "existing" in config.read_text(encoding="utf-8")
 
 
+def test_setup_repairs_existing_config_then_continues(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys) -> None:
+    config = tmp_path / "patchrelay.yaml"
+    config.write_text("server:\n  token: change-me\n", encoding="utf-8")
+    settings = Settings()
+    calls = {"repair": [], "doctor": 0}
+    answers = iter(["y", "y", "n", "n"])
+
+    class Result:
+        def __init__(self, *, applied: bool) -> None:
+            self.applied = applied
+
+        def to_dict(self) -> dict:
+            return {
+                "ok": True,
+                "configPath": str(config),
+                "changed": True,
+                "applied": self.applied,
+                "actions": [
+                    {
+                        "kind": "update",
+                        "target": "server.token",
+                        "message": "Replace token.",
+                        "before": "<redacted>",
+                        "after": "<generated>",
+                    }
+                ],
+                "errors": [],
+            }
+
+    monkeypatch.setattr(
+        cli,
+        "preview_setup",
+        lambda config_path, worker=None: type(
+            "Preview",
+            (),
+            {
+                "config_path": config,
+                "repo_path": tmp_path,
+                "base_branch": "main",
+                "worker": worker or "fake",
+                "test_command": ["python", "-m", "pytest"],
+                "server_host": "127.0.0.1",
+                "server_port": 8787,
+            },
+        )(),
+    )
+
+    def fake_repair(config_path: str, apply: bool = False) -> Result:
+        calls["repair"].append(apply)
+        return Result(applied=apply)
+
+    def fake_doctor(settings_arg: Settings) -> dict:
+        calls["doctor"] += 1
+        return {"ok": True, "checks": []}
+
+    monkeypatch.setattr(cli, "repair_config", fake_repair)
+    monkeypatch.setattr(cli, "load_settings", lambda config_path: settings)
+    monkeypatch.setattr(cli, "run_doctor", fake_doctor)
+    args = cli.build_parser().parse_args(["setup", "--config", str(config)])
+
+    cli.run_setup(args, input_func=lambda prompt: next(answers))
+
+    output = capsys.readouterr().out
+    assert calls["repair"] == [False, True]
+    assert calls["doctor"] == 1
+    assert "setup repair: dry-run" in output
+    assert "setup repair: applied" in output
+    assert "setup completed" in output
+
+
+def test_setup_uses_existing_valid_config_without_repair(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys,
+) -> None:
+    config = tmp_path / "patchrelay.yaml"
+    config.write_text("server:\n  token: existing\n", encoding="utf-8")
+    settings = Settings()
+    answers = iter(["y", "n", "n"])
+
+    class Result:
+        def to_dict(self) -> dict:
+            return {
+                "ok": True,
+                "configPath": str(config),
+                "changed": False,
+                "applied": False,
+                "actions": [],
+                "errors": [],
+            }
+
+    monkeypatch.setattr(
+        cli,
+        "preview_setup",
+        lambda config_path, worker=None: type(
+            "Preview",
+            (),
+            {
+                "config_path": config,
+                "repo_path": tmp_path,
+                "base_branch": "main",
+                "worker": worker or "fake",
+                "test_command": ["python", "-m", "pytest"],
+                "server_host": "127.0.0.1",
+                "server_port": 8787,
+            },
+        )(),
+    )
+    monkeypatch.setattr(cli, "repair_config", lambda config_path, apply=False: Result())
+    monkeypatch.setattr(cli, "load_settings", lambda config_path: settings)
+    monkeypatch.setattr(cli, "run_doctor", lambda settings_arg: {"ok": True, "checks": []})
+    args = cli.build_parser().parse_args(["setup", "--config", str(config)])
+
+    cli.run_setup(args, input_func=lambda prompt: next(answers))
+
+    output = capsys.readouterr().out
+    assert "no repairs needed" in output
+    assert "using existing config" in output
+    assert "setup completed" in output
+
+
 def test_setup_runs_yes_no_happy_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys) -> None:
     config = tmp_path / "patchrelay.yaml"
     settings = Settings()
@@ -605,6 +735,94 @@ def test_print_setup_status_includes_hints(capsys) -> None:
     assert "[fail] config: missing" in output
     assert "hint: run setup" in output
     assert "overall: fail" in output
+
+
+def test_print_setup_repair_includes_actions(capsys) -> None:
+    cli.print_setup_repair(
+        {
+            "ok": True,
+            "configPath": "patchrelay.yaml",
+            "changed": True,
+            "applied": False,
+            "actions": [
+                {
+                    "kind": "update",
+                    "target": "server.token",
+                    "message": "Replace token.",
+                    "before": "<redacted>",
+                    "after": "<generated>",
+                }
+            ],
+            "errors": [],
+        }
+    )
+
+    output = capsys.readouterr().out
+    assert "setup repair: dry-run" in output
+    assert "[update] server.token: Replace token." in output
+    assert "add --apply" in output
+    assert "overall: ok" in output
+
+
+def test_setup_repair_main_uses_repair_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys) -> None:
+    config = tmp_path / "patchrelay.yaml"
+    captured = {}
+
+    class Result:
+        def to_dict(self) -> dict:
+            return {
+                "ok": True,
+                "configPath": str(config),
+                "changed": False,
+                "applied": False,
+                "actions": [],
+                "errors": [],
+            }
+
+    def fake_repair(config_path: str, apply: bool = False) -> Result:
+        captured["config_path"] = config_path
+        captured["apply"] = apply
+        return Result()
+
+    monkeypatch.setattr(cli, "repair_config", fake_repair)
+    monkeypatch.setattr(
+        cli.sys,
+        "argv",
+        ["patchrelay", "setup", "repair", "--config", str(config), "--apply"],
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+
+    output = capsys.readouterr().out
+    assert exc.value.code == 0
+    assert captured == {"config_path": str(config), "apply": True}
+    assert "no repairs needed" in output
+
+
+def test_setup_repair_main_exits_nonzero_on_error(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys) -> None:
+    config = tmp_path / "patchrelay.yaml"
+
+    class Result:
+        def to_dict(self) -> dict:
+            return {
+                "ok": False,
+                "configPath": str(config),
+                "changed": False,
+                "applied": False,
+                "actions": [],
+                "errors": ["bad config"],
+            }
+
+    monkeypatch.setattr(cli, "repair_config", lambda config_path, apply=False: Result())
+    monkeypatch.setattr(cli.sys, "argv", ["patchrelay", "setup", "repair", "--config", str(config)])
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+
+    output = capsys.readouterr().out
+    assert exc.value.code == 1
+    assert "[fail] bad config" in output
 
 
 def test_extract_task_id_rejects_missing_task_id() -> None:

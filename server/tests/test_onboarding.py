@@ -7,10 +7,12 @@ from patchrelay.onboarding import (
     OnboardingError,
     OpenClawApplyStep,
     apply_openclaw_config,
+    build_config_repair_plan,
     build_openclaw_apply_steps,
     generate_openclaw_commands,
     init_config,
     preview_setup,
+    repair_config,
     smoke_plan,
 )
 from helpers import init_git_repo
@@ -87,6 +89,115 @@ def test_preview_setup_returns_detected_defaults(tmp_path: Path, monkeypatch: py
     assert preview.base_branch == "main"
     assert preview.worker == "fake"
     assert preview.test_command
+
+
+def test_repair_config_creates_missing_config_without_apply(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    repo = init_git_repo(tmp_path / "repo")
+    config = tmp_path / "patchrelay.yaml"
+    monkeypatch.chdir(repo)
+    monkeypatch.setattr("patchrelay.onboarding.generate_token", lambda: "repair-token")
+
+    plan = repair_config(config)
+
+    assert plan.ok is True
+    assert plan.changed is True
+    assert plan.applied is False
+    assert plan.actions[0].kind == "create"
+    assert plan.data is not None
+    assert plan.data["server"]["token"] == "repair-token"
+    assert not config.exists()
+
+
+def test_repair_config_apply_writes_missing_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    repo = init_git_repo(tmp_path / "repo")
+    config = tmp_path / "patchrelay.yaml"
+    monkeypatch.chdir(repo)
+    monkeypatch.setattr("patchrelay.onboarding.generate_token", lambda: "repair-token")
+
+    plan = repair_config(config, apply=True)
+
+    assert plan.ok is True
+    assert plan.applied is True
+    assert config.exists()
+    assert "repair-token" in config.read_text(encoding="utf-8")
+
+
+def test_repair_config_repairs_common_invalid_values(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    repo = init_git_repo(tmp_path / "repo")
+    config = tmp_path / "patchrelay.yaml"
+    config.write_text(
+        """
+server:
+  host: ""
+  port: 0
+  token: change-me
+repo:
+  path: C:/missing/repo
+  base_branch: missing
+  state_dir: ""
+worker:
+  default: unknown
+  codex_command: []
+tests:
+  default:
+    command: "python -m pytest"
+limits:
+  max_log_bytes: 0
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(repo)
+    monkeypatch.setattr("patchrelay.onboarding.generate_token", lambda: "new-token")
+    monkeypatch.setattr("patchrelay.onboarding.detect_default_worker", lambda: "fake")
+
+    plan = build_config_repair_plan(config)
+
+    assert plan.ok is True
+    assert plan.data is not None
+    assert plan.data["server"]["host"] == "127.0.0.1"
+    assert plan.data["server"]["port"] == 8787
+    assert plan.data["server"]["token"] == "new-token"
+    assert plan.data["repo"]["path"] == str(repo)
+    assert plan.data["repo"]["base_branch"] == "main"
+    assert plan.data["repo"]["state_dir"] == ".patchrelay"
+    assert plan.data["worker"]["default"] == "fake"
+    assert plan.data["worker"]["codex_command"] == "codex"
+    assert plan.data["tests"]["default"]["command"] == ["python", "-m", "pytest"]
+    assert plan.data["limits"]["max_log_bytes"] == 1_048_576
+    assert plan.data["limits"]["max_diff_bytes"] == 5_242_880
+    assert plan.data["limits"]["task_timeout_seconds"] == 3_600
+    assert {action.target for action in plan.actions} >= {
+        "server.token",
+        "repo.path",
+        "repo.base_branch",
+        "worker.default",
+        "tests.default.command",
+    }
+
+
+def test_repair_config_reports_invalid_yaml(tmp_path: Path) -> None:
+    config = tmp_path / "patchrelay.yaml"
+    config.write_text("server:\n  token: [unterminated\n", encoding="utf-8")
+
+    plan = repair_config(config, apply=True)
+
+    assert plan.ok is False
+    assert plan.applied is False
+    assert "Invalid YAML" in plan.errors[0]
+
+
+def test_repair_config_keeps_valid_config_unchanged(tmp_path: Path) -> None:
+    repo = init_git_repo(tmp_path / "repo")
+    config = tmp_path / "patchrelay.yaml"
+    init_config(config, repo_path=repo, token="valid-token")
+    before = config.read_text(encoding="utf-8")
+
+    plan = repair_config(config, apply=True)
+
+    assert plan.ok is True
+    assert plan.changed is False
+    assert plan.applied is False
+    assert config.read_text(encoding="utf-8") == before
 
 
 def test_smoke_plan_uses_small_fake_task() -> None:

@@ -134,7 +134,7 @@ uv run patchrelay init --config .\patchrelay.yaml
 uv run patchrelay setup --config .\patchrelay.yaml
 ```
 
-`patchrelay setup` 会先展示自动探测出的默认值，并且只在写入配置、运行 doctor、应用 OpenClaw 设置、运行 Gateway smoke test 前询问 yes/no。
+`patchrelay setup` 会先展示自动探测出的默认值，并且只在写入配置、修复已有配置、运行 doctor、应用 OpenClaw 设置、运行 Gateway smoke test 前询问 yes/no。配置已存在时，setup 会先预览可修复问题，确认后才会写入变更。
 
 演示或脚本化场景可以接受默认 yes/no 选择：
 
@@ -149,6 +149,18 @@ uv run patchrelay setup status --config .\patchrelay.yaml
 ```
 
 `setup status` 会检查 config、doctor、PatchRelay `/health` 和 OpenClaw Gateway 工具可达性。
+
+预览常见本地配置问题的修复方案：
+
+```powershell
+uv run patchrelay setup repair --config .\patchrelay.yaml
+```
+
+`setup repair` 可以创建缺失配置、替换空 token 或默认 token、修复 repo/base branch、补齐 worker 命令、补齐默认 test profile 和默认 limits。默认只 dry-run；加 `--apply` 才会写回 YAML：
+
+```powershell
+uv run patchrelay setup repair --config .\patchrelay.yaml --apply
+```
 
 `patchrelay init` 会自动探测当前 Git 仓库、当前分支、可用 worker 命令、默认测试命令，并写入随机本地 bearer token。
 
