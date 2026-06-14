@@ -182,6 +182,23 @@ uv run patchrelay setup verify --config .\patchrelay.yaml
 
 `setup verify` 会打印状态检查、repair 计划和推荐下一步。需要结构化输出时可以加 `--json`。
 
+配置完成后可以一键启动本地 runtime：
+
+```powershell
+uv run patchrelay setup start --config .\patchrelay.yaml
+```
+
+该命令会在后台启动 PatchRelay server；如果 `openclaw` 在 PATH 中可用，也会启动 OpenClaw Gateway，并检查配置中的 Codex / Claude CLI 是否可用。Codex 和 Claude 不是常驻服务；PatchRelay 会在每个任务到来时自动启动对应 worker 进程。
+
+查看或停止受管理的 runtime：
+
+```powershell
+uv run patchrelay runtime status --config .\patchrelay.yaml
+uv run patchrelay runtime stop --config .\patchrelay.yaml
+```
+
+需要结构化输出时可以加 `--json`。runtime 状态和日志会写到配置的 repo `state_dir` 下，例如 `.patchrelay\runtime.json` 和 `.patchrelay\runtime\*.log`。
+
 `patchrelay init` 会自动探测当前 Git 仓库、当前分支、可用 worker 命令、默认测试命令，并写入随机本地 bearer token。
 
 脚本化配置时可以显式传入参数：
@@ -241,22 +258,32 @@ limits:
 
 ## 启动 PatchRelay
 
-终端 1：
+一键启动本地 runtime：
 
 ```powershell
 cd C:\Users\57826\IdeaProjects\PatchRelay\PatchRelay\server
+uv run patchrelay runtime start --config .\patchrelay.yaml
+```
+
+查看受管理进程和 worker CLI 可用性：
+
+```powershell
+uv run patchrelay runtime status --config .\patchrelay.yaml
+```
+
+停止 PatchRelay / OpenClaw 受管理进程：
+
+```powershell
+uv run patchrelay runtime stop --config .\patchrelay.yaml
+```
+
+如果想以前台方式运行 server，仍然可以手动启动：
+
+```powershell
 uv run patchrelay serve --config .\patchrelay.yaml
 ```
 
-终端 2：
-
-```powershell
-cd C:\Users\57826\IdeaProjects\PatchRelay\PatchRelay\server
-$env:PATCHRELAY_TOKEN="change-me"
-uv run patchrelay doctor --config .\patchrelay.yaml
-```
-
-期望 `doctor` 检查通过：
+期望 runtime / `doctor` 检查通过：
 
 - repo 有效
 - git 可用
@@ -339,7 +366,7 @@ uv run patchrelay smoke `
   --gateway-token openclaw-local-token
 ```
 
-该命令会通过 Gateway `/tools/invoke` 调用 `patchrelay_submit_task` 和 `patchrelay_get_task`。执行前需要先启动 PatchRelay server 和 OpenClaw Gateway。
+该命令会通过 Gateway `/tools/invoke` 调用 `patchrelay_submit_task` 和 `patchrelay_get_task`。如果 PatchRelay server 或 OpenClaw Gateway 还没运行，先执行 `patchrelay runtime start`。
 
 构建并校验插件：
 

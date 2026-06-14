@@ -182,6 +182,23 @@ uv run patchrelay setup verify --config .\patchrelay.yaml
 
 `setup verify` prints the status checks, repair plan, and recommended next steps. Add `--json` if you want a structured payload.
 
+Start the local runtime services after configuration:
+
+```powershell
+uv run patchrelay setup start --config .\patchrelay.yaml
+```
+
+This starts the PatchRelay server in the background, starts OpenClaw Gateway when `openclaw` is available on PATH, and checks that the configured Codex and Claude CLI commands are ready. Codex and Claude are not long-running services; PatchRelay launches them automatically for each task.
+
+Inspect or stop the managed runtime:
+
+```powershell
+uv run patchrelay runtime status --config .\patchrelay.yaml
+uv run patchrelay runtime stop --config .\patchrelay.yaml
+```
+
+Use `--json` for structured output. Runtime state and logs are written under the configured repo `state_dir`, for example `.patchrelay\runtime.json` and `.patchrelay\runtime\*.log`.
+
 `patchrelay init` detects the current Git repository, current branch, available worker commands, a default test command, and writes a random local bearer token.
 
 For scripted setup, pass explicit values:
@@ -241,22 +258,32 @@ For a lightweight demo, use `server/examples/demo.patchrelay.yaml`; it uses the 
 
 ## Start PatchRelay
 
-Terminal 1:
+One-command local runtime startup:
 
 ```powershell
 cd C:\Users\57826\IdeaProjects\PatchRelay\PatchRelay\server
+uv run patchrelay runtime start --config .\patchrelay.yaml
+```
+
+Check the managed processes and worker CLI readiness:
+
+```powershell
+uv run patchrelay runtime status --config .\patchrelay.yaml
+```
+
+Stop managed PatchRelay/OpenClaw processes:
+
+```powershell
+uv run patchrelay runtime stop --config .\patchrelay.yaml
+```
+
+Manual server startup is still supported when you want a foreground process:
+
+```powershell
 uv run patchrelay serve --config .\patchrelay.yaml
 ```
 
-Terminal 2:
-
-```powershell
-cd C:\Users\57826\IdeaProjects\PatchRelay\PatchRelay\server
-$env:PATCHRELAY_TOKEN="change-me"
-uv run patchrelay doctor --config .\patchrelay.yaml
-```
-
-Expected `doctor` checks:
+Expected runtime/doctor checks:
 
 - repo is valid
 - git is available
@@ -339,7 +366,7 @@ uv run patchrelay smoke `
   --gateway-token openclaw-local-token
 ```
 
-This calls `patchrelay_submit_task` and `patchrelay_get_task` through Gateway `/tools/invoke`. PatchRelay server and OpenClaw Gateway must already be running.
+This calls `patchrelay_submit_task` and `patchrelay_get_task` through Gateway `/tools/invoke`. Run `patchrelay runtime start` first if PatchRelay server or OpenClaw Gateway is not already running.
 
 Build and validate the plugin:
 
