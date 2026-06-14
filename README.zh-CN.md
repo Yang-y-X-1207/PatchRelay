@@ -150,6 +150,12 @@ uv run patchrelay setup status --config .\patchrelay.yaml
 
 `setup status` 会检查 config、doctor、PatchRelay `/health` 和 OpenClaw Gateway 工具可达性。
 
+脚本或 CI 场景可以输出同样状态的 JSON：
+
+```powershell
+uv run patchrelay setup status --config .\patchrelay.yaml --json
+```
+
 预览常见本地配置问题的修复方案：
 
 ```powershell
@@ -161,6 +167,20 @@ uv run patchrelay setup repair --config .\patchrelay.yaml
 ```powershell
 uv run patchrelay setup repair --config .\patchrelay.yaml --apply
 ```
+
+脚本或 CI 场景也可以输出 repair 计划和结果的 JSON：
+
+```powershell
+uv run patchrelay setup repair --config .\patchrelay.yaml --json
+```
+
+如果想用一条非破坏性命令同时汇总状态和修复建议：
+
+```powershell
+uv run patchrelay setup verify --config .\patchrelay.yaml
+```
+
+`setup verify` 会打印状态检查、repair 计划和推荐下一步。需要结构化输出时可以加 `--json`。
 
 `patchrelay init` 会自动探测当前 Git 仓库、当前分支、可用 worker 命令、默认测试命令，并写入随机本地 bearer token。
 
