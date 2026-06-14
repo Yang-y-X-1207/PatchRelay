@@ -23,6 +23,7 @@ from patchrelay.onboarding import (
     repair_config,
     smoke_plan,
 )
+from patchrelay.runtime import RuntimeOptions, runtime_status, start_runtime, stop_runtime
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -75,15 +76,19 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--token", help="Bearer token to write into the config. Defaults to a generated token.")
 
     setup = subcommands.add_parser("setup", help="Interactive yes/no guided local setup.")
-    setup.add_argument("action", nargs="?", choices=["status", "repair", "verify"])
+    setup.add_argument("action", nargs="?", choices=["status", "repair", "verify", "start", "stop"])
     setup.add_argument("--config", default="patchrelay.yaml")
     setup.add_argument("--force", action="store_true", help="Allow replacing an existing configuration after confirmation.")
     setup.add_argument("--yes", action="store_true", help="Accept default yes/no answers.")
     setup.add_argument("--apply", action="store_true", help="Apply setup repair changes. Without this, repair is dry-run.")
-    setup.add_argument("--json", action="store_true", help="Print raw JSON for setup status, repair, or verify.")
+    setup.add_argument("--json", action="store_true", help="Print raw JSON for setup status, repair, verify, start, or stop.")
     setup.add_argument("--worker", choices=["fake", "codex", "claude"], default="fake")
     setup.add_argument("--gateway-url", default=os.getenv("OPENCLAW_GATEWAY_URL", "http://127.0.0.1:19001"))
     setup.add_argument("--gateway-token", default=os.getenv("OPENCLAW_GATEWAY_TOKEN", "openclaw-local-token"))
+    setup.add_argument("--gateway-bind", default="loopback")
+    setup.add_argument("--no-patchrelay", action="store_true", help="Do not start the PatchRelay server.")
+    setup.add_argument("--no-openclaw", action="store_true", help="Do not start the OpenClaw Gateway.")
+    setup.add_argument("--no-workers", action="store_true", help="Do not check Codex/Claude worker commands.")
     setup.add_argument("--timeout", type=float, default=300)
     setup.add_argument("--interval", type=float, default=1)
 
@@ -108,6 +113,18 @@ def build_parser() -> argparse.ArgumentParser:
     cleanup.add_argument("--config", default="patchrelay.yaml")
     cleanup.add_argument("--force", action="store_true", help="Remove cleanup targets. Without this, only preview.")
     cleanup.add_argument("--json", action="store_true", help="Print raw JSON.")
+
+    runtime = subcommands.add_parser("runtime", help="Start, stop, or inspect local PatchRelay runtime services.")
+    runtime.add_argument("action", choices=["start", "status", "stop"])
+    runtime.add_argument("--config", default="patchrelay.yaml")
+    runtime.add_argument("--gateway-url", default=os.getenv("OPENCLAW_GATEWAY_URL", "http://127.0.0.1:19001"))
+    runtime.add_argument("--gateway-token", default=os.getenv("OPENCLAW_GATEWAY_TOKEN", "openclaw-local-token"))
+    runtime.add_argument("--gateway-bind", default="loopback")
+    runtime.add_argument("--timeout", type=float, default=15)
+    runtime.add_argument("--no-patchrelay", action="store_true", help="Do not start the PatchRelay server.")
+    runtime.add_argument("--no-openclaw", action="store_true", help="Do not start the OpenClaw Gateway.")
+    runtime.add_argument("--no-workers", action="store_true", help="Do not check Codex/Claude worker commands.")
+    runtime.add_argument("--json", action="store_true", help="Print raw JSON.")
 
     return parser
 
@@ -199,6 +216,14 @@ def main() -> None:
             result = run_setup_verify(args)
             print_json(result) if args.json else print_setup_verify(result)
             raise SystemExit(0 if result["ok"] else 1)
+        if args.action == "start":
+            result = run_runtime_action(args, "start")
+            print_json(result) if args.json else print_runtime(result)
+            raise SystemExit(0 if result["ok"] else 1)
+        if args.action == "stop":
+            result = run_runtime_action(args, "stop")
+            print_json(result) if args.json else print_runtime(result)
+            raise SystemExit(0 if result["ok"] else 1)
         run_setup(args)
         return
 
@@ -266,6 +291,11 @@ def main() -> None:
         payload = result.to_dict()
         print_json(payload) if args.json else print_cleanup(payload)
         raise SystemExit(0 if payload["ok"] else 1)
+
+    if args.command == "runtime":
+        result = run_runtime_action(args, args.action)
+        print_json(result) if args.json else print_runtime(result)
+        raise SystemExit(0 if result["ok"] else 1)
 
     parser.print_help()
 
@@ -412,6 +442,10 @@ def continue_setup(args: argparse.Namespace, settings: Any, *, input_func: Any) 
         payload = wait_for_openclaw_task(gateway_args, task_id)
         print_smoke_summary(payload)
 
+    if setup_answer(args, "Start local PatchRelay runtime now?", default=False, input_func=input_func):
+        result = run_runtime_action(args, "start")
+        print_runtime(result)
+
     print("setup completed")
 
 
@@ -502,6 +536,38 @@ def setup_verify_recommendations(config_path: str, status: dict[str, Any], repai
             recommendations.append(hint)
 
     return recommendations
+
+
+def run_runtime_action(args: argparse.Namespace, action: str) -> dict[str, Any]:
+    try:
+        settings = load_settings(args.config)
+    except ConfigError as exc:
+        return {
+            "ok": False,
+            "action": action,
+            "statePath": "",
+            "services": [],
+            "workers": [],
+            "error": str(exc),
+        }
+
+    options = RuntimeOptions(
+        config_path=args.config,
+        gateway_url=args.gateway_url,
+        gateway_token=args.gateway_token,
+        gateway_bind=args.gateway_bind,
+        timeout_seconds=args.timeout,
+        start_patchrelay=not getattr(args, "no_patchrelay", False),
+        start_openclaw=not getattr(args, "no_openclaw", False),
+        check_workers=not getattr(args, "no_workers", False),
+    )
+    if action == "start":
+        return start_runtime(settings, options)
+    if action == "stop":
+        return stop_runtime(settings, options)
+    if action == "status":
+        return runtime_status(settings, options)
+    raise SystemExit(f"Unsupported runtime action: {action}")
 
 
 def first_failed_hint(doctor_result: dict[str, Any]) -> str:
@@ -763,6 +829,44 @@ def print_setup_verify(result: dict[str, Any]) -> None:
         print("recommendations:")
         for recommendation in result["recommendations"]:
             print(f"- {recommendation}")
+
+    print(f"overall: {'ok' if result['ok'] else 'fail'}")
+
+
+def print_runtime(result: dict[str, Any]) -> None:
+    print(f"runtime {result['action']}")
+    if result.get("statePath"):
+        print(f"state: {result['statePath']}")
+    if result.get("error"):
+        print(f"[fail] {result['error']}")
+        print("overall: fail")
+        return
+
+    if result["services"]:
+        print()
+        print("services:")
+        for service in result["services"]:
+            status = "ok" if service.get("ok") else "fail"
+            detail = service.get("message") or service.get("status") or ""
+            print(f"[{status}] {service['name']}: {service.get('status', '-')}: {detail}")
+            if service.get("pid"):
+                print(f"pid: {service['pid']}")
+            if service.get("url"):
+                print(f"url: {service['url']}")
+            if service.get("logPath"):
+                print(f"log: {service['logPath']}")
+
+    if result["workers"]:
+        print()
+        print("workers:")
+        for worker in result["workers"]:
+            status = "ok" if worker.get("ok") else "fail"
+            detail = worker.get("message") or worker.get("status") or ""
+            print(f"[{status}] {worker['name']}: {worker.get('status', '-')}: {detail}")
+            if worker.get("path"):
+                print(f"path: {worker['path']}")
+            if worker.get("version"):
+                print(f"version: {worker['version']}")
 
     print(f"overall: {'ok' if result['ok'] else 'fail'}")
 

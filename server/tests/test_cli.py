@@ -237,6 +237,47 @@ def test_openclaw_parser_accepts_config() -> None:
     assert args.apply is True
 
 
+def test_runtime_parser_accepts_start_options() -> None:
+    args = cli.build_parser().parse_args(
+        [
+            "runtime",
+            "start",
+            "--config",
+            "local.yaml",
+            "--gateway-url",
+            "http://gateway.test:19002",
+            "--gateway-token",
+            "secret",
+            "--gateway-bind",
+            "loopback",
+            "--timeout",
+            "5",
+            "--no-workers",
+            "--json",
+        ]
+    )
+
+    assert args.command == "runtime"
+    assert args.action == "start"
+    assert args.config == "local.yaml"
+    assert args.gateway_url == "http://gateway.test:19002"
+    assert args.gateway_token == "secret"
+    assert args.gateway_bind == "loopback"
+    assert args.timeout == 5
+    assert args.no_workers is True
+    assert args.json is True
+
+
+def test_setup_parser_accepts_start_and_stop_actions() -> None:
+    start_args = cli.build_parser().parse_args(["setup", "start", "--no-openclaw", "--json"])
+    stop_args = cli.build_parser().parse_args(["setup", "stop"])
+
+    assert start_args.action == "start"
+    assert start_args.no_openclaw is True
+    assert start_args.json is True
+    assert stop_args.action == "stop"
+
+
 def test_parse_test_command_uses_shell_like_splitting() -> None:
     assert cli.parse_test_command('python -m pytest "tests/unit suite"') == [
         "python",
@@ -456,7 +497,7 @@ def test_setup_repairs_existing_config_then_continues(monkeypatch: pytest.Monkey
     config.write_text("server:\n  token: change-me\n", encoding="utf-8")
     settings = Settings()
     calls = {"repair": [], "doctor": 0}
-    answers = iter(["y", "y", "n", "n"])
+    answers = iter(["y", "y", "n", "n", "n"])
 
     class Result:
         def __init__(self, *, applied: bool) -> None:
@@ -529,7 +570,7 @@ def test_setup_uses_existing_valid_config_without_repair(
     config = tmp_path / "patchrelay.yaml"
     config.write_text("server:\n  token: existing\n", encoding="utf-8")
     settings = Settings()
-    answers = iter(["y", "n", "n"])
+    answers = iter(["y", "n", "n", "n"])
 
     class Result:
         def to_dict(self) -> dict:
@@ -577,7 +618,7 @@ def test_setup_runs_yes_no_happy_path(monkeypatch: pytest.MonkeyPatch, tmp_path:
     settings = Settings()
     init_result = type("InitResult", (), {"config_path": config, "settings": settings, "overwritten": False})()
     captured = {}
-    answers = iter(["y", "y", "y", "n"])
+    answers = iter(["y", "y", "y", "n", "n"])
 
     monkeypatch.setattr(cli, "init_config", lambda config_path, force: init_result)
     monkeypatch.setattr(
@@ -1083,6 +1124,96 @@ def test_openclaw_apply_executes_when_apply_flag_is_set(monkeypatch: pytest.Monk
     assert exc.value.code == 0
     assert "[ok] configure plugin" in output
     assert "done" in output
+
+
+def test_runtime_main_prints_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys) -> None:
+    config = tmp_path / "patchrelay.yaml"
+    config.write_text("server:\n  token: file-token\n", encoding="utf-8")
+    result = {
+        "ok": True,
+        "action": "start",
+        "statePath": str(tmp_path / "runtime.json"),
+        "services": [{"name": "patchrelay_server", "ok": True, "status": "started"}],
+        "workers": [],
+    }
+
+    monkeypatch.setattr(cli, "run_runtime_action", lambda args, action: result)
+    monkeypatch.setattr(cli.sys, "argv", ["patchrelay", "runtime", "start", "--config", str(config), "--json"])
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+
+    output = capsys.readouterr().out
+    assert exc.value.code == 0
+    assert '"action": "start"' in output
+    assert '"patchrelay_server"' in output
+
+
+def test_setup_start_uses_runtime_action(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys) -> None:
+    config = tmp_path / "patchrelay.yaml"
+    config.write_text("server:\n  token: file-token\n", encoding="utf-8")
+    captured = {}
+    result = {
+        "ok": True,
+        "action": "start",
+        "statePath": str(tmp_path / "runtime.json"),
+        "services": [{"name": "patchrelay_server", "ok": True, "status": "started", "message": "started"}],
+        "workers": [],
+    }
+
+    def fake_runtime(args, action: str) -> dict:
+        captured["action"] = action
+        captured["config"] = args.config
+        return result
+
+    monkeypatch.setattr(cli, "run_runtime_action", fake_runtime)
+    monkeypatch.setattr(cli.sys, "argv", ["patchrelay", "setup", "start", "--config", str(config)])
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+
+    output = capsys.readouterr().out
+    assert exc.value.code == 0
+    assert captured == {"action": "start", "config": str(config)}
+    assert "runtime start" in output
+
+
+def test_print_runtime_includes_services_and_workers(capsys) -> None:
+    cli.print_runtime(
+        {
+            "ok": False,
+            "action": "status",
+            "statePath": "state.json",
+            "services": [
+                {
+                    "name": "patchrelay_server",
+                    "ok": True,
+                    "status": "running",
+                    "message": "reachable",
+                    "pid": 123,
+                    "url": "http://127.0.0.1:8787",
+                    "logPath": "server.log",
+                }
+            ],
+            "workers": [
+                {
+                    "name": "codex",
+                    "ok": False,
+                    "status": "unavailable",
+                    "message": "missing",
+                    "path": "",
+                    "version": "",
+                }
+            ],
+        }
+    )
+
+    output = capsys.readouterr().out
+    assert "runtime status" in output
+    assert "[ok] patchrelay_server: running: reachable" in output
+    assert "pid: 123" in output
+    assert "[fail] codex: unavailable: missing" in output
+    assert "overall: fail" in output
 
 
 def test_wait_for_task_stops_on_terminal_status(monkeypatch: pytest.MonkeyPatch) -> None:
