@@ -256,6 +256,93 @@ Important fields:
 
 For a lightweight demo, use `server/examples/demo.patchrelay.yaml`; it uses the `fake` worker and a simple test command.
 
+## PatchRelay TUI
+
+PatchRelay also ships with a full-screen TUI for onboarding and day-to-day task control. It reads the same `patchrelay.yaml` file as the CLI and talks to the same PatchRelay server.
+
+Install the optional TUI dependency set:
+
+```powershell
+cd C:\Users\57826\IdeaProjects\PatchRelay\PatchRelay\server
+uv sync --extra tui
+```
+
+Launch the dashboard:
+
+```powershell
+uv run patchrelay ui `
+  --config .\patchrelay.yaml `
+  --url http://127.0.0.1:8787 `
+  --token change-me `
+  --gateway-url http://127.0.0.1:19001 `
+  --gateway-token openclaw-local-token `
+  --gateway-bind loopback
+```
+
+If your `patchrelay.yaml` already points at the running server and gateway, you can shorten the command to `uv run patchrelay ui --config .\patchrelay.yaml`.
+
+The TUI workflow is:
+
+```mermaid
+sequenceDiagram
+  participant User
+  participant TUI as PatchRelay TUI
+  participant Server as PatchRelay Server
+  participant Gateway as OpenClaw Gateway
+  participant Worker as Claude/Codex Worker
+
+  User->>TUI: launch patchrelay ui
+  TUI->>Server: GET /health
+  TUI->>Server: GET /tasks
+  User->>TUI: open Setup wizard
+  TUI->>Server: setup status / verify / repair
+  TUI->>Gateway: setup smoke via /tools/invoke
+  User->>TUI: submit task
+  TUI->>Server: POST /message:send
+  Server->>Worker: create worktree and run worker
+  Worker->>Server: edits, logs, test result
+  Server->>TUI: refreshed task list, detail, artifacts, events
+  User->>TUI: inspect, copy, open, or cancel task
+```
+
+Common dashboard shortcuts:
+
+- `r`: refresh
+- `f`: focus search
+- `s`: submit task
+- `u` or `z`: open the setup wizard
+- `x`: cancel the selected task
+- `c`: copy the selected task id
+- `y`: copy the selected diff
+- `w`: copy the selected worktree path
+- `d`: focus the diff artifact
+- `o`: open the selected worktree
+- `v`: cycle the detail view
+- `p`: pause or resume auto-refresh
+- `Esc`: close a modal
+- `q`: quit
+
+The setup wizard uses the same config file and can run these actions:
+
+- `status`: check the local config, PatchRelay `/health`, and OpenClaw Gateway reachability
+- `verify`: combine status checks with repair recommendations
+- `repair`: apply config repair suggestions
+- `setup`: run the guided onboarding flow
+- `start runtime`: start the local PatchRelay/OpenClaw runtime
+- `stop runtime`: stop the managed runtime
+- `smoke`: submit a minimal task and wait for the result
+
+Typical TUI use looks like this:
+
+1. Run `patchrelay ui`.
+2. Open the setup wizard with `u` or `z`.
+3. Use `status` or `verify` to check the current environment.
+4. Run `repair` or `setup` if the config needs fixing.
+5. Start the runtime from the wizard or with `patchrelay setup start`.
+6. Submit a task from the dashboard with `s`.
+7. Watch the task list update, then open the task detail, artifacts, and events panes.
+8. Copy the diff or worktree path, open the worktree, or cancel the task if needed.
+
 ## Start PatchRelay
 
 One-command local runtime startup:

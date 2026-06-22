@@ -239,12 +239,34 @@ def test_openclaw_parser_accepts_config() -> None:
 
 def test_ui_parser_accepts_connection_options() -> None:
     args = cli.build_parser().parse_args(
-        ["ui", "--url", "http://example.test", "--token", "secret", "--timeout", "5", "--refresh-interval", "0.5"]
+        [
+            "ui",
+            "--config",
+            "local.yaml",
+            "--url",
+            "http://example.test",
+            "--token",
+            "secret",
+            "--gateway-url",
+            "http://gateway.test",
+            "--gateway-token",
+            "gateway-secret",
+            "--gateway-bind",
+            "loopback",
+            "--timeout",
+            "5",
+            "--refresh-interval",
+            "0.5",
+        ]
     )
 
     assert args.command == "ui"
+    assert args.config == "local.yaml"
     assert args.url == "http://example.test"
     assert args.token == "secret"
+    assert args.gateway_url == "http://gateway.test"
+    assert args.gateway_token == "gateway-secret"
+    assert args.gateway_bind == "loopback"
     assert args.timeout == 5
     assert args.refresh_interval == 0.5
 
