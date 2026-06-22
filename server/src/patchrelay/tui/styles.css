@@ -2,42 +2,118 @@ Screen {
   layout: vertical;
 }
 
-#server-summary {
+#dashboard-toolbar {
   height: 3;
+  padding: 0 1;
+  content-align: left middle;
+}
+
+#server-summary {
+  width: 1fr;
   padding: 0 1;
 }
 
 #server-badge {
-  height: 1;
+  width: auto;
   padding: 0 1;
+}
+
+#dashboard-controls {
+  height: 3;
+  padding: 0 1;
+  gap: 1;
+}
+
+#task-search {
+  width: 2fr;
+}
+
+#task-filter,
+#view-switcher {
+  width: 20;
 }
 
 #dashboard-body {
   height: 1fr;
+  gap: 1;
+  padding: 0 1 1 1;
 }
 
 #task-table {
-  width: 1fr;
-  height: 1fr;
-}
-
-#task-panel {
   width: 2fr;
   height: 1fr;
 }
 
-#task-detail {
-  height: 8;
+#task-panel {
+  width: 3fr;
+  height: 1fr;
+  gap: 1;
+}
+
+#task-actions {
+  height: auto;
+  gap: 1;
   padding: 0 1;
+  content-align: left middle;
+}
+
+#task-actions Button {
+  width: auto;
+}
+
+#task-detail,
+#artifact-pane,
+#task-log {
+  height: 1fr;
+  border: tall $background 30%;
+  padding: 0 1;
+}
+
+#task-detail {
+  height: 12;
+}
+
+#artifact-pane {
+  height: 1fr;
 }
 
 #task-log {
   height: 1fr;
-  padding: 0 1;
+}
+
+#submit-modal,
+#setup-modal {
+  width: 90%;
+  height: 85%;
+  padding: 1 2;
+  border: heavy $primary;
+  background: $surface;
+}
+
+#submit-actions,
+#setup-actions {
+  height: auto;
+  gap: 1;
+}
+
+#submit-preview,
+#setup-output,
+#artifact-text {
+  height: 1fr;
+}
+
+.panel-title {
+  text-style: bold;
+  margin-bottom: 1;
 }
 
 .state-ok {
   background: green;
+  color: white;
+}
+
+.state-running {
+  background: blue;
   color: white;
 }
 
@@ -55,4 +131,3 @@ Screen {
   background: grey;
   color: white;
 }
-
