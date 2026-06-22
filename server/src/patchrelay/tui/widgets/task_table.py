@@ -14,10 +14,11 @@ class TaskTable(DataTable):
     def configure_columns(self) -> None:
         if self._configured:
             return
-        self.add_column("ID", width=14)
+        self.add_column("Task", width=16)
         self.add_column("Status", width=12)
         self.add_column("Phase", width=12)
         self.add_column("Worker", width=10)
+        self.add_column("Test", width=10)
         self.add_column("Updated", width=20)
         self._configured = True
 
@@ -29,13 +30,16 @@ class TaskTable(DataTable):
             task_id = str(task.get("taskId") or "").strip()
             if not task_id:
                 continue
+            summary = self._summary(task)
             updated = task.get("updatedAt") or task.get("createdAt") or "-"
             self.add_row(
                 task_id[:14],
-                str(task.get("status") or "-"),
-                str(task.get("phase") or "-"),
-                str(task.get("worker") or "-"),
+                summary["status"],
+                summary["phase"],
+                summary["worker"],
+                summary["test"],
                 str(updated),
+                key=task_id,
             )
             self._task_ids.append(task_id)
         if selected_task_id:
@@ -47,4 +51,17 @@ class TaskTable(DataTable):
         except ValueError:
             return
         if hasattr(self, "move_cursor"):
-            self.move_cursor(row_index)
+            self.move_cursor(row=row_index)
+
+    def _summary(self, task: dict[str, Any]) -> dict[str, str]:
+        artifacts = task.get("artifacts") if isinstance(task.get("artifacts"), dict) else {}
+        summary = artifacts.get("patchrelay.summary") if isinstance(artifacts.get("patchrelay.summary"), dict) else {}
+        summary_content = summary.get("content") if isinstance(summary.get("content"), dict) else {}
+        tests = artifacts.get("patchrelay.tests") if isinstance(artifacts.get("patchrelay.tests"), dict) else {}
+        tests_content = tests.get("content") if isinstance(tests.get("content"), dict) else {}
+        return {
+            "status": str(task.get("status") or "-"),
+            "phase": str(task.get("phase") or "-"),
+            "worker": str(task.get("worker") or "-"),
+            "test": str(summary_content.get("testStatus") or tests_content.get("status") or "-"),
+        }

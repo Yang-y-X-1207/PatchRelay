@@ -6,7 +6,7 @@ from textual.widgets import RichLog
 
 
 class LiveLog(RichLog):
-    def show_events(self, events: list[dict[str, Any]]) -> None:
+    def show_events(self, events: list[dict[str, Any]], *, compact: bool = False) -> None:
         self.clear()
         if not events:
             self.write("No events yet.")
@@ -17,5 +17,7 @@ class LiveLog(RichLog):
             severity = event.get("severity") or "info"
             phase = event.get("phase") or "-"
             message = event.get("message") or ""
-            self.write(f"{sequence:>3}  {timestamp}  [{severity}] {phase}: {message}")
-
+            if compact:
+                self.write(f"[{severity}] {phase}: {message}")
+            else:
+                self.write(f"{sequence:>3}  {timestamp}  [{severity}] {phase}: {message}")
