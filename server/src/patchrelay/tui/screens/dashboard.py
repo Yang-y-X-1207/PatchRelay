@@ -13,7 +13,7 @@ from textual.widgets import Button, Input, Select, Static
 from patchrelay.tui.client import PatchRelayClient
 from patchrelay.tui.screens.task_detail import TaskDetailPane
 from patchrelay.tui.screens.task_submit import TaskSubmitScreen
-from patchrelay.tui.screens.setup_wizard import SetupWizardScreen
+from patchrelay.tui.screens.setup_wizard import SetupWizardConfig, SetupWizardScreen
 from patchrelay.tui.widgets.live_log import LiveLog
 from patchrelay.tui.widgets.status_badge import StatusBadge
 from patchrelay.tui.widgets.task_table import TaskTable
@@ -128,10 +128,16 @@ def _render_health_summary(health: dict[str, Any]) -> str:
 
 
 class DashboardView(Vertical):
-    def __init__(self, client: PatchRelayClient, refresh_interval: float = 2.0) -> None:
+    def __init__(
+        self,
+        client: PatchRelayClient,
+        refresh_interval: float = 2.0,
+        setup_config: SetupWizardConfig | None = None,
+    ) -> None:
         super().__init__()
         self.client = client
         self.refresh_interval = refresh_interval
+        self.setup_config = setup_config
         self._tasks: list[dict[str, Any]] = []
         self._selected_task_id: str | None = None
         self._task_filter = "all"
@@ -262,7 +268,7 @@ class DashboardView(Vertical):
         elif button_id == "submit-button":
             self.app.push_screen(TaskSubmitScreen(self.client), self._after_submit)
         elif button_id == "setup-button":
-            self.app.push_screen(SetupWizardScreen(self.client), self._after_setup)
+            self._open_setup()
         elif button_id == "cancel-button":
             await self._cancel_selected_task()
         elif button_id == "copy-id-button":
@@ -291,7 +297,10 @@ class DashboardView(Vertical):
         self.app.push_screen(TaskSubmitScreen(self.client), self._after_submit)
 
     def action_open_setup(self) -> None:
-        self.app.push_screen(SetupWizardScreen(self.client), self._after_setup)
+        self._open_setup()
+
+    def action_setup_wizard(self) -> None:
+        self._open_setup()
 
     def action_cancel_task(self) -> None:
         self.call_later(self._cancel_selected_task)
@@ -487,3 +496,9 @@ class DashboardView(Vertical):
 
     def _after_setup(self, result: Any | None = None) -> None:
         self.call_later(self.refresh)
+
+    def _open_setup(self) -> None:
+        if self.setup_config is None:
+            self.app.notify("Setup wizard is unavailable.", title="PatchRelay", severity="warning")
+            return
+        self.app.push_screen(SetupWizardScreen(self.client, self.setup_config), self._after_setup)

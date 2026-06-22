@@ -110,8 +110,12 @@ def build_parser() -> argparse.ArgumentParser:
     openclaw.add_argument("--apply", action="store_true", help="Actually run OpenClaw setup commands.")
 
     ui = subcommands.add_parser("ui", help="Open the PatchRelay TUI dashboard.")
+    ui.add_argument("--config", default="patchrelay.yaml")
     ui.add_argument("--url", default=os.getenv("PATCHRELAY_URL", "http://127.0.0.1:8787"))
     ui.add_argument("--token", default=os.getenv("PATCHRELAY_TOKEN", "change-me"))
+    ui.add_argument("--gateway-url", default=os.getenv("OPENCLAW_GATEWAY_URL", "http://127.0.0.1:19001"))
+    ui.add_argument("--gateway-token", default=os.getenv("OPENCLAW_GATEWAY_TOKEN", "openclaw-local-token"))
+    ui.add_argument("--gateway-bind", default="loopback")
     ui.add_argument("--timeout", type=float, default=10)
     ui.add_argument("--refresh-interval", type=float, default=2)
 
@@ -291,6 +295,8 @@ def main() -> None:
 
         run_tui(
             [
+                "--config",
+                args.config,
                 "--url",
                 args.url,
                 "--token",
@@ -299,6 +305,12 @@ def main() -> None:
                 str(args.timeout),
                 "--refresh-interval",
                 str(args.refresh_interval),
+                "--gateway-url",
+                args.gateway_url,
+                "--gateway-token",
+                args.gateway_token,
+                "--gateway-bind",
+                args.gateway_bind,
             ]
         )
         return
