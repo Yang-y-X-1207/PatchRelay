@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import subprocess
+import sys
+from pathlib import Path
 from typing import Any
 
 from textual.containers import Horizontal, Vertical
@@ -34,6 +38,8 @@ VIEW_OPTIONS = [
     ("Logs", "logs"),
 ]
 
+CANCELLABLE_STATUSES = {"submitted", "queued", "working"}
+
 
 def _task_id_from_row(row_key: Any) -> str | None:
     if row_key is None:
@@ -51,6 +57,38 @@ def _task_status(task: dict[str, Any]) -> str:
 
 def _task_phase(task: dict[str, Any]) -> str:
     return str(task.get("phase") or "").lower()
+
+
+def _task_worktree_path(task: dict[str, Any] | None) -> Path | None:
+    if not task:
+        return None
+    value = task.get("worktreePath")
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return Path(value).expanduser()
+
+
+def _task_action_state(task: dict[str, Any] | None) -> dict[str, bool]:
+    if not task:
+        return {"has_task": False, "can_cancel": False, "has_worktree": False}
+    return {
+        "has_task": True,
+        "can_cancel": _task_status(task) in CANCELLABLE_STATUSES,
+        "has_worktree": _task_worktree_path(task) is not None,
+    }
+
+
+def _open_path(path: Path) -> None:
+    resolved = path.expanduser()
+    if os.name == "nt":
+        os.startfile(str(resolved))  # type: ignore[attr-defined]
+        return
+    command = ["open"] if sys.platform == "darwin" else ["xdg-open"]
+    subprocess.Popen(
+        [*command, str(resolved)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
 
 
 def _render_health_summary(health: dict[str, Any]) -> str:
@@ -115,6 +153,13 @@ class DashboardView(Vertical):
         with Horizontal(id="dashboard-body"):
             yield TaskTable(id="task-table")
             with Vertical(id="task-panel"):
+                with Horizontal(id="task-actions"):
+                    yield Button("Cancel", id="cancel-button", variant="error")
+                    yield Button("Copy ID", id="copy-id-button", variant="default")
+                    yield Button("Copy Diff", id="copy-diff-button", variant="default")
+                    yield Button("Copy Worktree", id="copy-worktree-button", variant="default")
+                    yield Button("Open Diff", id="open-diff-button", variant="primary")
+                    yield Button("Open Worktree", id="open-worktree-button", variant="primary")
                 yield TaskDetailPane(id="task-detail")
                 yield TaskArtifactsPane(id="artifact-pane")
                 yield LiveLog(id="task-log")
@@ -124,6 +169,7 @@ class DashboardView(Vertical):
         self.query_one(TaskDetailPane).show_empty()
         self.query_one(TaskArtifactsPane).show_empty()
         self.query_one(LiveLog).show_events([])
+        self._update_task_actions()
         await self.refresh()
         self.set_interval(self.refresh_interval, self._auto_refresh)
 
@@ -150,6 +196,7 @@ class DashboardView(Vertical):
         badge = self.query_one(StatusBadge)
         badge.set_state(health.get("status") or "unknown", detail=f"{len(filtered)} shown / {len(tasks)} total")
         self.query_one(TaskTable).set_tasks(filtered, selected_task_id=self._selected_task_id)
+        self._update_task_actions()
         await self._refresh_selected_task()
 
     def _load_snapshot(self) -> tuple[dict[str, Any], list[dict[str, Any]]]:
@@ -183,12 +230,14 @@ class DashboardView(Vertical):
         task_id = _task_id_from_row(getattr(event, "row_key", None))
         if task_id:
             self._selected_task_id = task_id
+            self._update_task_actions()
             await self._refresh_selected_task()
 
     async def on_data_table_row_highlighted(self, event) -> None:  # noqa: ANN001
         task_id = _task_id_from_row(getattr(event, "row_key", None))
         if task_id:
             self._selected_task_id = task_id
+            self._update_task_actions()
             await self._refresh_selected_task()
 
     async def on_select_changed(self, event) -> None:  # noqa: ANN001
@@ -214,6 +263,18 @@ class DashboardView(Vertical):
             self.app.push_screen(TaskSubmitScreen(self.client), self._after_submit)
         elif button_id == "setup-button":
             self.app.push_screen(SetupWizardScreen(self.client), self._after_setup)
+        elif button_id == "cancel-button":
+            await self._cancel_selected_task()
+        elif button_id == "copy-id-button":
+            self._copy_selected_task_id()
+        elif button_id == "copy-diff-button":
+            self._copy_selected_diff()
+        elif button_id == "copy-worktree-button":
+            self._copy_selected_worktree_path()
+        elif button_id == "open-diff-button":
+            self._open_selected_diff()
+        elif button_id == "open-worktree-button":
+            self._open_selected_worktree()
 
     def action_refresh(self) -> None:
         self.call_later(self.refresh)
@@ -231,6 +292,24 @@ class DashboardView(Vertical):
 
     def action_open_setup(self) -> None:
         self.app.push_screen(SetupWizardScreen(self.client), self._after_setup)
+
+    def action_cancel_task(self) -> None:
+        self.call_later(self._cancel_selected_task)
+
+    def action_copy_task_id(self) -> None:
+        self._copy_selected_task_id()
+
+    def action_copy_worktree_path(self) -> None:
+        self._copy_selected_worktree_path()
+
+    def action_copy_diff(self) -> None:
+        self._copy_selected_diff()
+
+    def action_open_diff(self) -> None:
+        self._open_selected_diff()
+
+    def action_open_worktree(self) -> None:
+        self._open_selected_worktree()
 
     def action_cycle_view(self) -> None:
         values = [value for _, value in VIEW_OPTIONS]
@@ -253,6 +332,117 @@ class DashboardView(Vertical):
         self._view_mode = values[(current - 1) % len(values)]
         self.query_one("#view-switcher", Select).value = self._view_mode
         self.call_later(self._refresh_selected_task)
+
+    def _selected_task(self) -> dict[str, Any] | None:
+        if not self._selected_task_id:
+            return None
+        for task in self._tasks:
+            if str(task.get("taskId") or "") == self._selected_task_id:
+                return task
+        return None
+
+    def _update_task_actions(self) -> None:
+        state = _task_action_state(self._selected_task())
+        cancel_button = self.query_one("#cancel-button", Button)
+        copy_id_button = self.query_one("#copy-id-button", Button)
+        copy_worktree_button = self.query_one("#copy-worktree-button", Button)
+        open_worktree_button = self.query_one("#open-worktree-button", Button)
+
+        cancel_button.disabled = not state["can_cancel"]
+        copy_id_button.disabled = not state["has_task"]
+        copy_worktree_button.disabled = not state["has_worktree"]
+        open_worktree_button.disabled = not state["has_worktree"]
+
+    async def _cancel_selected_task(self) -> None:
+        task = self._selected_task()
+        if not task:
+            self.app.notify("Select a task first.", title="PatchRelay", severity="warning")
+            return
+        if not _task_action_state(task)["can_cancel"]:
+            self.app.notify("Task is already terminal.", title="PatchRelay", severity="warning")
+            return
+        task_id = str(task.get("taskId") or self._selected_task_id or "")
+        try:
+            await asyncio.to_thread(self.client.cancel_task, task_id)
+        except Exception as exc:  # noqa: BLE001
+            self.app.notify(f"Cancel failed: {exc}", title="PatchRelay", severity="error")
+            return
+        self.app.notify(f"Canceled task {task_id}.", title="PatchRelay", severity="information")
+        await self.refresh()
+
+    def _copy_selected_task_id(self) -> None:
+        task = self._selected_task()
+        if not task:
+            self.app.notify("Select a task first.", title="PatchRelay", severity="warning")
+            return
+        task_id = str(task.get("taskId") or self._selected_task_id or "")
+        if not task_id:
+            self.app.notify("Task id is unavailable.", title="PatchRelay", severity="error")
+            return
+        self.app.copy_to_clipboard(task_id)
+        self.app.notify(f"Copied task id {task_id}.", title="PatchRelay", severity="information")
+
+    def _copy_selected_worktree_path(self) -> None:
+        worktree_path = _task_worktree_path(self._selected_task())
+        if worktree_path is None:
+            self.app.notify("Worktree path is unavailable.", title="PatchRelay", severity="warning")
+            return
+        self.app.copy_to_clipboard(str(worktree_path))
+        self.app.notify(f"Copied worktree path {worktree_path}.", title="PatchRelay", severity="information")
+
+    def _selected_diff_text(self) -> str | None:
+        task = self._selected_task()
+        if not task:
+            return None
+        display = task.get("display") if isinstance(task.get("display"), dict) else {}
+        diff_text = display.get("diff")
+        if isinstance(diff_text, str) and diff_text.strip():
+            return diff_text
+        artifacts = task.get("artifacts") if isinstance(task.get("artifacts"), dict) else {}
+        artifact = artifacts.get("patchrelay.diff") if isinstance(artifacts, dict) else None
+        if isinstance(artifact, dict):
+            content = artifact.get("content")
+            if isinstance(content, str) and content.strip():
+                return content
+        return None
+
+    def _copy_selected_diff(self) -> None:
+        diff_text = self._selected_diff_text()
+        if diff_text is None:
+            self.app.notify("Diff is unavailable.", title="PatchRelay", severity="warning")
+            return
+        self.app.copy_to_clipboard(diff_text)
+        self.app.notify("Copied diff text.", title="PatchRelay", severity="information")
+
+    def _open_selected_diff(self) -> None:
+        if self._selected_task() is None:
+            self.app.notify("Select a task first.", title="PatchRelay", severity="warning")
+            return
+        diff_text = self._selected_diff_text()
+        if diff_text is None:
+            self.app.notify("Diff is unavailable.", title="PatchRelay", severity="warning")
+            return
+        artifact_pane = self.query_one(TaskArtifactsPane)
+        artifact_pane.set_view("diff")
+        self._view_mode = "artifacts"
+        self.query_one("#view-switcher", Select).value = self._view_mode
+        self.call_later(self._refresh_selected_task)
+        self.app.notify("Focused diff artifact.", title="PatchRelay", severity="information")
+
+    def _open_selected_worktree(self) -> None:
+        worktree_path = _task_worktree_path(self._selected_task())
+        if worktree_path is None:
+            self.app.notify("Worktree path is unavailable.", title="PatchRelay", severity="warning")
+            return
+        if not worktree_path.exists():
+            self.app.notify(f"Worktree not found: {worktree_path}", title="PatchRelay", severity="error")
+            return
+        try:
+            _open_path(worktree_path)
+        except Exception as exc:  # noqa: BLE001
+            self.app.notify(f"Failed to open worktree: {exc}", title="PatchRelay", severity="error")
+            return
+        self.app.notify(f"Opened worktree {worktree_path}.", title="PatchRelay", severity="information")
 
     async def _refresh_selected_task(self) -> None:
         detail = self.query_one(TaskDetailPane)

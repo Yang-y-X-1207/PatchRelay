@@ -66,6 +66,16 @@ class TaskArtifactsPane(Static):
         self._view = str(event.value or "summary")
         self._render()
 
+    def set_view(self, view: str) -> None:
+        self._view = view if view in {artifact_view for _, artifact_view in ARTIFACT_VIEWS} else "summary"
+        select = self.query_one("#artifact-view", Select)
+        if select.value != self._view:
+            select.value = self._view
+        self._render()
+
+    def current_view(self) -> str:
+        return self._view
+
     def _render(self) -> None:
         if not self._task:
             return

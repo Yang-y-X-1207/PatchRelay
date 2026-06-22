@@ -50,6 +50,17 @@ Screen {
   gap: 1;
 }
 
+#task-actions {
+  height: auto;
+  gap: 1;
+  padding: 0 1;
+  content-align: left middle;
+}
+
+#task-actions Button {
+  width: auto;
+}
+
 #task-detail,
 #artifact-pane,
 #task-log {
