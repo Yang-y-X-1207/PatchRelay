@@ -237,6 +237,18 @@ def test_openclaw_parser_accepts_config() -> None:
     assert args.apply is True
 
 
+def test_ui_parser_accepts_connection_options() -> None:
+    args = cli.build_parser().parse_args(
+        ["ui", "--url", "http://example.test", "--token", "secret", "--timeout", "5", "--refresh-interval", "0.5"]
+    )
+
+    assert args.command == "ui"
+    assert args.url == "http://example.test"
+    assert args.token == "secret"
+    assert args.timeout == 5
+    assert args.refresh_interval == 0.5
+
+
 def test_runtime_parser_accepts_start_options() -> None:
     args = cli.build_parser().parse_args(
         [

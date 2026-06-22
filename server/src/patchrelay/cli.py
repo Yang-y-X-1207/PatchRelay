@@ -109,6 +109,12 @@ def build_parser() -> argparse.ArgumentParser:
     openclaw.add_argument("--config", default="patchrelay.yaml")
     openclaw.add_argument("--apply", action="store_true", help="Actually run OpenClaw setup commands.")
 
+    ui = subcommands.add_parser("ui", help="Open the PatchRelay TUI dashboard.")
+    ui.add_argument("--url", default=os.getenv("PATCHRELAY_URL", "http://127.0.0.1:8787"))
+    ui.add_argument("--token", default=os.getenv("PATCHRELAY_TOKEN", "change-me"))
+    ui.add_argument("--timeout", type=float, default=10)
+    ui.add_argument("--refresh-interval", type=float, default=2)
+
     cleanup = subcommands.add_parser("cleanup", help="Clean PatchRelay worktrees, branches, and local state.")
     cleanup.add_argument("--config", default="patchrelay.yaml")
     cleanup.add_argument("--force", action="store_true", help="Remove cleanup targets. Without this, only preview.")
@@ -278,6 +284,23 @@ def main() -> None:
             print_openclaw_apply_results(results)
             raise SystemExit(0 if all(result.ok for result in results) else 1)
         print_openclaw_commands(generate_openclaw_commands(settings))
+        return
+
+    if args.command == "ui":
+        from patchrelay.tui.app import run as run_tui
+
+        run_tui(
+            [
+                "--url",
+                args.url,
+                "--token",
+                args.token,
+                "--timeout",
+                str(args.timeout),
+                "--refresh-interval",
+                str(args.refresh_interval),
+            ]
+        )
         return
 
     if args.command == "cleanup":
