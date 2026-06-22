@@ -1,0 +1,58 @@
+Screen {
+  layout: vertical;
+}
+
+#server-summary {
+  height: 3;
+  padding: 0 1;
+}
+
+#server-badge {
+  height: 1;
+  padding: 0 1;
+}
+
+#dashboard-body {
+  height: 1fr;
+}
+
+#task-table {
+  width: 1fr;
+  height: 1fr;
+}
+
+#task-panel {
+  width: 2fr;
+  height: 1fr;
+}
+
+#task-detail {
+  height: 8;
+  padding: 0 1;
+}
+
+#task-log {
+  height: 1fr;
+  padding: 0 1;
+}
+
+.state-ok {
+  background: green;
+  color: white;
+}
+
+.state-warn {
+  background: yellow;
+  color: black;
+}
+
+.state-error {
+  background: red;
+  color: white;
+}
+
+.state-idle {
+  background: grey;
+  color: white;
+}
+
