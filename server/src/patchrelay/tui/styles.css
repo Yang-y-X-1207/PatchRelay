@@ -21,7 +21,6 @@ Screen {
 #dashboard-controls {
   height: 3;
   padding: 0 1;
-  gap: 1;
 }
 
 #task-search {
@@ -35,7 +34,6 @@ Screen {
 
 #dashboard-body {
   height: 1fr;
-  gap: 1;
   padding: 0 1 1 1;
 }
 
@@ -47,12 +45,10 @@ Screen {
 #task-panel {
   width: 3fr;
   height: 1fr;
-  gap: 1;
 }
 
 #task-actions {
   height: auto;
-  gap: 1;
   padding: 0 1;
   content-align: left middle;
 }
@@ -93,7 +89,6 @@ Screen {
 #submit-actions,
 #setup-actions {
   height: auto;
-  gap: 1;
 }
 
 #submit-preview,

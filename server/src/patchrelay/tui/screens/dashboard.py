@@ -176,14 +176,14 @@ class DashboardView(Vertical):
         self.query_one(TaskArtifactsPane).show_empty()
         self.query_one(LiveLog).show_events([])
         self._update_task_actions()
-        await self.refresh()
+        await self.reload_tasks()
         self.set_interval(self.refresh_interval, self._auto_refresh)
 
     async def _auto_refresh(self) -> None:
         if not self._refresh_paused:
-            await self.refresh()
+            await self.reload_tasks()
 
-    async def refresh(self) -> None:
+    async def reload_tasks(self) -> None:
         try:
             health, tasks = await asyncio.to_thread(self._load_snapshot)
         except Exception as exc:  # noqa: BLE001
@@ -249,19 +249,19 @@ class DashboardView(Vertical):
     async def on_select_changed(self, event) -> None:  # noqa: ANN001
         if event.select.id == "task-filter":
             self._task_filter = str(event.value or "all")
-            await self.refresh()
+            await self.reload_tasks()
         elif event.select.id == "view-switcher":
             self._view_mode = str(event.value or "overview")
             await self._refresh_selected_task()
 
     async def on_input_changed(self, event) -> None:  # noqa: ANN001
         if event.input.id == "task-search":
-            await self.refresh()
+            await self.reload_tasks()
 
     async def on_button_pressed(self, event) -> None:  # noqa: ANN001
         button_id = event.button.id
         if button_id == "refresh-button":
-            await self.refresh()
+            await self.reload_tasks()
         elif button_id == "pause-button":
             self._refresh_paused = not self._refresh_paused
             event.button.label = "Resume" if self._refresh_paused else "Pause"
@@ -283,7 +283,7 @@ class DashboardView(Vertical):
             self._open_selected_worktree()
 
     def action_refresh(self) -> None:
-        self.call_later(self.refresh)
+        self.call_later(self.reload_tasks)
 
     def action_toggle_refresh(self) -> None:
         self._refresh_paused = not self._refresh_paused
@@ -330,7 +330,7 @@ class DashboardView(Vertical):
     def action_clear_filter(self) -> None:
         search = self.query_one("#task-search", Input)
         search.value = ""
-        self.call_later(self.refresh)
+        self.call_later(self.reload_tasks)
 
     def action_next_view(self) -> None:
         self.action_cycle_view()
@@ -377,7 +377,7 @@ class DashboardView(Vertical):
             self.app.notify(f"Cancel failed: {exc}", title="PatchRelay", severity="error")
             return
         self.app.notify(f"Canceled task {task_id}.", title="PatchRelay", severity="information")
-        await self.refresh()
+        await self.reload_tasks()
 
     def _copy_selected_task_id(self) -> None:
         task = self._selected_task()
@@ -492,10 +492,10 @@ class DashboardView(Vertical):
         self._selected_task_id = None
 
     def _after_submit(self, result: Any | None = None) -> None:
-        self.call_later(self.refresh)
+        self.call_later(self.reload_tasks)
 
     def _after_setup(self, result: Any | None = None) -> None:
-        self.call_later(self.refresh)
+        self.call_later(self.reload_tasks)
 
     def _open_setup(self) -> None:
         if self.setup_config is None:
