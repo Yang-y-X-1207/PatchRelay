@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import secrets
 from collections.abc import Callable
 
 from fastapi import Request
@@ -24,7 +25,7 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
 
         authorization = request.headers.get("authorization", "")
         expected = f"Bearer {self._token}"
-        if authorization != expected:
+        if not secrets.compare_digest(authorization, expected):
             return JSONResponse(
                 status_code=401,
                 content={"error": "unauthorized", "message": "Valid Bearer token required."},

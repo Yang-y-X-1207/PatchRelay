@@ -54,7 +54,14 @@ def build_parser() -> argparse.ArgumentParser:
     wait.add_argument("task_id")
     wait.add_argument("--timeout", type=float, default=300)
     wait.add_argument("--interval", type=float, default=1)
+    wait.add_argument("--follow", action="store_true", help="Print task events while waiting.")
     wait.add_argument("--json", action="store_true", help="Print raw JSON.")
+
+    logs = subcommands.add_parser("logs", help="Print task event timeline from a running PatchRelay server.")
+    add_client_args(logs)
+    logs.add_argument("task_id")
+    logs.add_argument("--after", type=int, help="Only print events after this sequence number.")
+    logs.add_argument("--json", action="store_true", help="Print raw JSON.")
 
     cancel = subcommands.add_parser("cancel", help="Cancel a queued or running task.")
     add_client_args(cancel)
@@ -164,8 +171,17 @@ def main() -> None:
         return
 
     if args.command == "wait":
-        payload = wait_for_task(args, args.task_id)
+        payload = follow_task(args, args.task_id) if args.follow else wait_for_task(args, args.task_id)
         print_json(payload) if args.json else print_task_summary(payload)
+        return
+
+    if args.command == "logs":
+        payload = request_json(
+            args,
+            "GET",
+            f"/tasks/{args.task_id}/events{f'?after={args.after}' if args.after is not None else ''}",
+        )
+        print_json(payload) if args.json else print_task_events(payload)
         return
 
     if args.command == "cancel":
@@ -705,6 +721,22 @@ def wait_for_task(args: argparse.Namespace, task_id: str) -> dict[str, Any]:
     raise SystemExit(f"Timed out waiting for task {task_id}")
 
 
+def follow_task(args: argparse.Namespace, task_id: str) -> dict[str, Any]:
+    deadline = time.monotonic() + args.timeout
+    last_sequence = 0
+    while time.monotonic() < deadline:
+        events_payload = request_json(args, "GET", f"/tasks/{task_id}/events?after={last_sequence}")
+        for event in events_payload.get("events", []):
+            print_task_event(event)
+            last_sequence = max(last_sequence, int(event.get("sequence") or 0))
+
+        payload = request_json(args, "GET", f"/tasks/{task_id}")
+        if payload["status"] in {"completed", "failed", "canceled"}:
+            return payload
+        time.sleep(args.interval)
+    raise SystemExit(f"Timed out waiting for task {task_id}")
+
+
 def wait_for_openclaw_task(args: argparse.Namespace, task_id: str) -> dict[str, Any]:
     deadline = time.monotonic() + args.timeout
     while time.monotonic() < deadline:
@@ -722,12 +754,38 @@ def print_task_summary(payload: dict[str, Any]) -> None:
         print(f"phase: {payload['phase']}")
     if payload.get("branch"):
         print(f"branch: {payload['branch']}")
+    if payload.get("eventCount") is not None:
+        print(f"events: {payload['eventCount']}")
+    latest_event = payload.get("latestEvent")
+    if isinstance(latest_event, dict):
+        latest_phase = latest_event.get("phase") or "-"
+        latest_message = latest_event.get("message") or ""
+        print(f"latest: {latest_phase}: {latest_message}")
     summary = payload.get("artifacts", {}).get("patchrelay.summary", {}).get("content")
     if summary:
         print(f"worker: {summary.get('worker')}")
         changed_files = summary.get("changedFiles") or []
         print(f"changed files: {', '.join(changed_files) or '-'}")
         print(f"test status: {summary.get('testStatus')}")
+
+
+def print_task_events(payload: dict[str, Any]) -> None:
+    print(f"task: {payload['taskId']}")
+    events = payload.get("events", [])
+    if not events:
+        print("events: -")
+        return
+    for event in events:
+        print_task_event(event)
+
+
+def print_task_event(event: dict[str, Any]) -> None:
+    severity = event.get("severity") or "info"
+    phase = event.get("phase") or "-"
+    sequence = event.get("sequence") or "-"
+    timestamp = event.get("timestamp") or "-"
+    message = event.get("message") or ""
+    print(f"{sequence}  {timestamp}  [{severity}] {phase}: {message}")
 
 
 def print_doctor(result: dict[str, Any]) -> None:

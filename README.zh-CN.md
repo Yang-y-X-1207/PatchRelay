@@ -304,6 +304,19 @@ uv run patchrelay smoke --config .\patchrelay.yaml --worker fake
 uv run patchrelay submit "Create a demo fake worker change" --worker fake --wait --token change-me
 ```
 
+等待任务时跟随打印事件：
+
+```powershell
+uv run patchrelay submit "Create a demo fake worker change" --worker fake --wait --token change-me
+uv run patchrelay wait <task-id> --follow --token change-me
+```
+
+打印任务事件时间线：
+
+```powershell
+uv run patchrelay logs <task-id> --token change-me
+```
+
 提交 Claude Code 任务：
 
 ```powershell
@@ -528,7 +541,10 @@ PatchRelay 接收类似 A2A 的请求：
 - `POST /message:stream`
 - `GET /tasks`
 - `GET /tasks/{task_id}`
+- `GET /tasks/{task_id}/events`
 - `POST /tasks/{task_id}:cancel`
+
+任务响应会包含 `eventCount`、`latestEvent` 和最近的 `events`。可以用 `/tasks/{task_id}/events?after=<sequence>` 分页获取新的时间线事件。
 
 ## 开发验证
 

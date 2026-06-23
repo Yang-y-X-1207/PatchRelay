@@ -40,6 +40,23 @@ def wait_for_status(
     raise AssertionError(f"Task {task_id} did not reach {statuses}")
 
 
+def wait_for_phase(
+    client: TestClient,
+    headers: dict[str, str],
+    task_id: str,
+    *phases: str,
+) -> dict:
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        response = client.get(f"/tasks/{task_id}", headers=headers)
+        assert response.status_code == 200
+        payload = response.json()
+        if payload["phase"] in phases:
+            return payload
+        time.sleep(0.02)
+    raise AssertionError(f"Task {task_id} did not reach phase {phases}")
+
+
 def wait_for_artifact(
     client: TestClient,
     headers: dict[str, str],
@@ -71,6 +88,40 @@ def test_submit_and_complete_fake_task(client: TestClient, auth_headers: dict[st
     assert "patchrelay.worker" in payload["artifacts"]
     assert payload["branch"].startswith("patchrelay/")
     assert payload["worktreePath"]
+    phases = [event["phase"] for event in payload["events"]]
+    assert "queued" in phases
+    assert "workspace" in phases
+    assert "worker" in phases
+    assert payload["eventCount"] == len(payload["events"])
+    assert payload["latestEvent"]["phase"] == "completed"
+
+
+def test_task_events_endpoint_returns_timeline(client: TestClient, auth_headers: dict[str, str]) -> None:
+    response = client.post("/message:send", json=task_request("record events"), headers=auth_headers)
+    task_id = response.json()["taskId"]
+    wait_for_status(client, auth_headers, task_id, "completed")
+
+    events = client.get(f"/tasks/{task_id}/events", headers=auth_headers)
+    payload = events.json()
+
+    assert events.status_code == 200
+    assert payload["taskId"] == task_id
+    assert payload["events"][0]["sequence"] == 1
+    assert payload["events"][0]["phase"] == "queued"
+    assert any(event["phase"] == "artifacts" for event in payload["events"])
+    assert payload["events"] == sorted(payload["events"], key=lambda event: event["sequence"])
+
+
+def test_task_events_endpoint_supports_after_cursor(client: TestClient, auth_headers: dict[str, str]) -> None:
+    response = client.post("/message:send", json=task_request("cursor events"), headers=auth_headers)
+    task_id = response.json()["taskId"]
+    wait_for_status(client, auth_headers, task_id, "completed")
+
+    all_events = client.get(f"/tasks/{task_id}/events", headers=auth_headers).json()["events"]
+    filtered = client.get(f"/tasks/{task_id}/events?after=1", headers=auth_headers).json()["events"]
+
+    assert len(filtered) == len(all_events) - 1
+    assert all(event["sequence"] > 1 for event in filtered)
 
 
 def test_submit_rejects_empty_instruction(client: TestClient, auth_headers: dict[str, str]) -> None:
@@ -125,6 +176,38 @@ def test_can_cancel_working_task(client: TestClient, auth_headers: dict[str, str
     assert payload["artifacts"]["patchrelay.worker"]["content"]["exitCode"] == 130
 
 
+def test_cancelled_task_does_not_complete_after_tests_finish(tmp_path: Path) -> None:
+    repo = init_git_repo(tmp_path / "repo")
+    marker = tmp_path / "test-marker.txt"
+    settings = Settings(
+        server=ServerConfig(token="test-token"),
+        repo=RepoConfig(path=repo, base_branch="main", state_dir=Path(".patchrelay-test")),
+        tests={
+            "default": ConfigTestProfile(
+                command=[
+                    "python",
+                    "-c",
+                    f"from pathlib import Path; import time; time.sleep(2); Path({str(marker)!r}).write_text('ran', encoding='utf-8')",
+                ]
+            )
+        },
+    )
+    headers = {"Authorization": "Bearer test-token"}
+
+    with TestClient(create_app(settings)) as local_client:
+        response = local_client.post("/message:send", json=task_request("sleep before finishing"), headers=headers)
+        task_id = response.json()["taskId"]
+        wait_for_phase(local_client, headers, task_id, "tests")
+        cancel = local_client.post(f"/tasks/{task_id}:cancel", headers=headers)
+        payload = wait_for_status(local_client, headers, task_id, "canceled")
+
+    assert cancel.status_code == 200
+    assert payload["status"] == "canceled"
+    assert payload["phase"] == "canceled"
+    assert payload["artifacts"]["patchrelay.tests"]["content"]["exitCode"] == 130
+    assert not marker.exists()
+
+
 def test_list_tasks(client: TestClient, auth_headers: dict[str, str]) -> None:
     client.post("/message:send", json=task_request("list me"), headers=auth_headers)
 
@@ -145,7 +228,9 @@ def test_stream_message_returns_sse_events(client: TestClient, auth_headers: dic
 
     assert response.status_code == 200
     assert "event: task" in body
+    assert "event: event" in body
     assert "event: done" in body
+    assert "Task queued." in body
     assert "completed" in body
 
 
@@ -209,6 +294,7 @@ def test_completed_tasks_are_restored_from_sqlite(tmp_path: Path) -> None:
     assert restored.status_code == 200
     assert payload["status"] == "completed"
     assert payload["artifacts"]["patchrelay.summary"]["content"]["changedFiles"] == ["fake-change.txt"]
+    assert any(event["phase"] == "queued" for event in payload["events"])
 
 
 def test_incomplete_tasks_are_marked_failed_after_restart(tmp_path: Path) -> None:
@@ -232,3 +318,4 @@ def test_incomplete_tasks_are_marked_failed_after_restart(tmp_path: Path) -> Non
     assert restored.status_code == 200
     assert payload["status"] == "failed"
     assert payload["error"] == "Task was interrupted by PatchRelay restart."
+    assert payload["events"][-1]["severity"] == "error"

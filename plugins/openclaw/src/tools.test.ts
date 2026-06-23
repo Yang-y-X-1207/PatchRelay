@@ -32,7 +32,24 @@ before(async () => {
         return;
       }
       if (request.url === "/tasks/task-1") {
-        response.end(JSON.stringify({ taskId: "task-1", status: "completed" }));
+        response.end(
+          JSON.stringify({
+            taskId: "task-1",
+            status: "completed",
+            phase: "completed",
+            worker: "fake",
+            latestEvent: { message: "Task execution completed." },
+            eventCount: 9,
+            artifacts: {
+              "patchrelay.summary": {
+                content: {
+                  changedFiles: ["fake-change.txt"],
+                  testStatus: "passed",
+                },
+              },
+            },
+          }),
+        );
         return;
       }
       if (request.url === "/tasks/task-1:cancel") {
@@ -76,7 +93,24 @@ test("patchrelay_submit_task posts A2A-like message", async () => {
 test("patchrelay_get_task fetches task", async () => {
   const response = await patchrelay_get_task({ taskId: "task-1" }, { baseUrl });
 
-  assert.deepEqual(response, { taskId: "task-1", status: "completed" });
+  assert.equal(typeof response, "object");
+  assert(response);
+  const payload = response as Record<string, unknown>;
+  assert.equal(payload.taskId, "task-1");
+  assert.equal(payload.status, "completed");
+});
+
+test("patchrelay_get_task adds display summary", async () => {
+  const response = await patchrelay_get_task({ taskId: "task-1" }, { baseUrl });
+
+  assert.equal(typeof response, "object");
+  assert(response);
+  const payload = response as Record<string, unknown>;
+  assert.equal(typeof payload.patchrelayDisplay, "string");
+  assert.match(payload.patchrelayDisplay as string, /PatchRelay task task-1/);
+  assert.match(payload.patchrelayDisplay as string, /test: passed/);
+  assert.match(payload.patchrelayDisplay as string, /events: 9/);
+  assert.match(payload.patchrelayDisplay as string, /latest: Task execution completed/);
 });
 
 test("patchrelay_cancel_task cancels task", async () => {
