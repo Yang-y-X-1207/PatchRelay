@@ -28,8 +28,14 @@ def truncate_text(value: str, max_bytes: int) -> tuple[str, bool]:
     raw = value.encode("utf-8")
     if len(raw) <= max_bytes:
         return value, False
-    truncated = raw[:max_bytes].decode("utf-8", errors="ignore")
-    return f"{truncated}\n[truncated]", True
+    truncated_bytes = raw[:max_bytes]
+    while truncated_bytes:
+        try:
+            truncated = truncated_bytes.decode("utf-8")
+            return f"{truncated}\n[truncated]", True
+        except UnicodeDecodeError:
+            truncated_bytes = truncated_bytes[:-1]
+    return "[truncated]", True
 
 
 def clean_log(value: str, limits: LimitsConfig) -> tuple[str, bool]:

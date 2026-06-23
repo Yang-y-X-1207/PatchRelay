@@ -105,12 +105,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         async def events() -> AsyncIterator[str]:
-            last_status = None
+            yield format_sse_event("task", task.public_dict())
+            last_sequence = len(task.events)
             while True:
                 current = await app.state.tasks.get(task.id)
-                if current.status != last_status:
-                    yield format_sse_event("task", current.public_dict())
-                    last_status = current.status
+                for event in current.events:
+                    if event.sequence > last_sequence:
+                        yield format_sse_event("event", event.public_dict())
+                        last_sequence = event.sequence
                 if current.status in {"completed", "failed", "canceled"}:
                     yield format_sse_event("done", current.public_dict())
                     break
@@ -130,6 +132,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except TaskNotFound as exc:
             raise HTTPException(status_code=404, detail="Task not found.") from exc
         return task.public_dict()
+
+    @app.get("/tasks/{task_id}/events")
+    async def get_task_events(task_id: str, after: int | None = None) -> dict:
+        try:
+            events = await app.state.tasks.get_events(task_id, after=after)
+        except TaskNotFound as exc:
+            raise HTTPException(status_code=404, detail="Task not found.") from exc
+        return {"taskId": task_id, "events": [event.public_dict() for event in events]}
 
     @app.post("/tasks/{task_id}:cancel")
     async def cancel_task(task_id: str) -> dict:

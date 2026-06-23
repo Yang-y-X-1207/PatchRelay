@@ -23,3 +23,9 @@ def test_protected_paths_require_bearer_token(client: TestClient) -> None:
     response = client.get("/tasks")
 
     assert response.status_code == 401
+
+
+def test_protected_paths_reject_wrong_bearer_token(client: TestClient) -> None:
+    response = client.get("/tasks", headers={"Authorization": "Bearer wrong-token"})
+
+    assert response.status_code == 401

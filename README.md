@@ -391,6 +391,19 @@ Submit a fake-worker task:
 uv run patchrelay submit "Create a demo fake worker change" --worker fake --wait --token change-me
 ```
 
+Follow task events while waiting:
+
+```powershell
+uv run patchrelay submit "Create a demo fake worker change" --worker fake --wait --token change-me
+uv run patchrelay wait <task-id> --follow --token change-me
+```
+
+Print a task event timeline:
+
+```powershell
+uv run patchrelay logs <task-id> --token change-me
+```
+
 Submit a Claude Code task:
 
 ```powershell
@@ -615,7 +628,10 @@ Main server endpoints:
 - `POST /message:stream`
 - `GET /tasks`
 - `GET /tasks/{task_id}`
+- `GET /tasks/{task_id}/events`
 - `POST /tasks/{task_id}:cancel`
+
+Task responses include `eventCount`, `latestEvent`, and recent `events`. Use `/tasks/{task_id}/events?after=<sequence>` to page new timeline events.
 
 ## Development Verification
 

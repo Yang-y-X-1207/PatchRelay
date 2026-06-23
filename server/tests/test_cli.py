@@ -66,6 +66,15 @@ def test_cancel_parser_requires_task_id() -> None:
     assert args.task_id == "task-1"
 
 
+def test_logs_parser_accepts_after_and_json() -> None:
+    args = cli.build_parser().parse_args(["logs", "task-1", "--after", "3", "--json"])
+
+    assert args.command == "logs"
+    assert args.task_id == "task-1"
+    assert args.after == 3
+    assert args.json is True
+
+
 def test_submit_parser_collects_instruction() -> None:
     args = cli.build_parser().parse_args(
         ["submit", "fix", "the", "bug", "--worker", "fake", "--wait", "--timeout", "10", "--interval", "0.1"]
@@ -1250,6 +1259,23 @@ def test_print_runtime_includes_services_and_workers(capsys) -> None:
     assert "overall: fail" in output
 
 
+def test_print_task_summary_includes_latest_event(capsys) -> None:
+    cli.print_task_summary(
+        {
+            "taskId": "task-1",
+            "status": "working",
+            "phase": "worker",
+            "eventCount": 3,
+            "latestEvent": {"phase": "worker", "message": "Worker started."},
+            "artifacts": {},
+        }
+    )
+
+    output = capsys.readouterr().out
+    assert "events: 3" in output
+    assert "latest: worker: Worker started." in output
+
+
 def test_wait_for_task_stops_on_terminal_status(monkeypatch: pytest.MonkeyPatch) -> None:
     args = cli.build_parser().parse_args(["wait", "task-1", "--timeout", "1", "--interval", "0"])
 
@@ -1262,3 +1288,72 @@ def test_wait_for_task_stops_on_terminal_status(monkeypatch: pytest.MonkeyPatch)
     payload = cli.wait_for_task(args, "task-1")
 
     assert payload["status"] == "completed"
+
+
+def test_follow_task_prints_new_events(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+    args = cli.build_parser().parse_args(["wait", "task-1", "--follow", "--timeout", "1", "--interval", "0"])
+    calls = []
+
+    def fake_request(args, method: str, path: str, payload=None) -> dict:
+        calls.append(path)
+        if path.startswith("/tasks/task-1/events"):
+            return {
+                "taskId": "task-1",
+                "events": [
+                    {
+                        "sequence": 1,
+                        "timestamp": "2026-06-14T00:00:00+00:00",
+                        "phase": "queued",
+                        "severity": "info",
+                        "message": "Task queued.",
+                    }
+                ],
+            }
+        return {"taskId": "task-1", "status": "completed"}
+
+    monkeypatch.setattr(cli, "request_json", fake_request)
+
+    payload = cli.follow_task(args, "task-1")
+
+    output = capsys.readouterr().out
+    assert payload["status"] == "completed"
+    assert "/tasks/task-1/events?after=0" in calls
+    assert "[info] queued: Task queued." in output
+
+
+def test_logs_main_prints_task_events(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+    payload = {
+        "taskId": "task-1",
+        "events": [
+            {
+                "sequence": 2,
+                "timestamp": "2026-06-14T00:00:01+00:00",
+                "phase": "worker",
+                "severity": "warning",
+                "message": "worker stderr",
+            }
+        ],
+    }
+    captured = {}
+
+    def fake_request(args, method: str, path: str, request_payload=None) -> dict:
+        captured["path"] = path
+        return payload
+
+    monkeypatch.setattr(cli, "request_json", fake_request)
+    monkeypatch.setattr(cli.sys, "argv", ["patchrelay", "logs", "task-1", "--after", "1"])
+
+    cli.main()
+
+    output = capsys.readouterr().out
+    assert captured["path"] == "/tasks/task-1/events?after=1"
+    assert "task: task-1" in output
+    assert "[warning] worker: worker stderr" in output
+
+
+def test_print_task_events_includes_empty_state(capsys) -> None:
+    cli.print_task_events({"taskId": "task-1", "events": []})
+
+    output = capsys.readouterr().out
+    assert "task: task-1" in output
+    assert "events: -" in output

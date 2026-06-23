@@ -81,7 +81,7 @@ export default defineToolPlugin({
     }),
     tool({
       name: "patchrelay_get_task",
-      description: "Fetch PatchRelay task status, logs, diff, and test artifacts.",
+      description: "Fetch PatchRelay task status, logs, events, diff, and test artifacts.",
       parameters: Type.Object({
         taskId: Type.String({
           description: "PatchRelay task id.",
