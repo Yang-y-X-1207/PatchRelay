@@ -30,8 +30,8 @@ def _format_text(value: Any) -> str:
 class TaskArtifactsPane(Static):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
-        self._task: dict[str, Any] | None = None
-        self._display: dict[str, Any] = {}
+        self._current_task: dict[str, Any] | None = None
+        self._current_display: dict[str, Any] = {}
         self._view = "summary"
 
     def compose(self):
@@ -43,21 +43,21 @@ class TaskArtifactsPane(Static):
             yield TextArea("", id="artifact-text", read_only=True, show_line_numbers=False, soft_wrap=False)
 
     def show_empty(self, message: str = "No task selected.") -> None:
-        self._task = None
-        self._display = {}
+        self._current_task = None
+        self._current_display = {}
         self._view = "summary"
         self.query_one("#artifact-meta", Static).update("")
         self.query_one("#artifact-text", TextArea).load_text(message)
 
     def show_error(self, message: str) -> None:
-        self._task = None
-        self._display = {}
+        self._current_task = None
+        self._current_display = {}
         self.query_one("#artifact-meta", Static).update("error")
         self.query_one("#artifact-text", TextArea).load_text(f"error: {message}")
 
     def show_task(self, task: dict[str, Any], *, display: dict[str, Any] | None = None) -> None:
-        self._task = task
-        self._display = display or {}
+        self._current_task = task
+        self._current_display = display or {}
         self._render()
 
     def on_select_changed(self, event) -> None:  # noqa: ANN001
@@ -77,21 +77,37 @@ class TaskArtifactsPane(Static):
         return self._view
 
     def _render(self) -> None:
-        if not self._task:
+        if not self._current_task:
             return
-        header = self._display.get("header") if isinstance(self._display.get("header"), dict) else {}
-        summary = self._display.get("summary") if isinstance(self._display.get("summary"), dict) else {}
-        tests = self._display.get("tests") if isinstance(self._display.get("tests"), dict) else {}
-        worker = self._display.get("worker") if isinstance(self._display.get("worker"), dict) else {}
-        diff_text = _format_text(self._display.get("diff"))
-        log_text = _format_text(self._display.get("log"))
+        header = (
+            self._current_display.get("header")
+            if isinstance(self._current_display.get("header"), dict)
+            else {}
+        )
+        summary = (
+            self._current_display.get("summary")
+            if isinstance(self._current_display.get("summary"), dict)
+            else {}
+        )
+        tests = (
+            self._current_display.get("tests")
+            if isinstance(self._current_display.get("tests"), dict)
+            else {}
+        )
+        worker = (
+            self._current_display.get("worker")
+            if isinstance(self._current_display.get("worker"), dict)
+            else {}
+        )
+        diff_text = _format_text(self._current_display.get("diff"))
+        log_text = _format_text(self._current_display.get("log"))
         artifact_meta = self.query_one("#artifact-meta", Static)
         artifact_text = self.query_one("#artifact-text", TextArea)
 
         if self._view == "summary":
             artifact_meta.update(
-                f"{header.get('taskId') or self._task.get('taskId') or '-'}"
-                f" | {header.get('status') or self._task.get('status') or '-'}"
+                f"{header.get('taskId') or self._current_task.get('taskId') or '-'}"
+                f" | {header.get('status') or self._current_task.get('status') or '-'}"
                 f" | {header.get('changedFiles') or summary.get('changedFiles') or []}"
             )
             artifact_text.load_text(_format_text(summary))

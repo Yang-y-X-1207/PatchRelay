@@ -6,8 +6,8 @@ from textual.widgets import DataTable
 
 
 class TaskTable(DataTable):
-    def __init__(self) -> None:
-        super().__init__()
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
         self._configured = False
         self._task_ids: list[str] = []
 
