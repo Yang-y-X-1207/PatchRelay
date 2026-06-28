@@ -49,9 +49,12 @@ def parse_args(argv: list[str] | None = None) -> TUIConfig:
     )
 
 
-def run(argv: list[str] | None = None) -> None:
-    config = parse_args(argv)
-    from patchrelay.onboarding import preview_setup
+def create_tui_app(
+    client: PatchRelayClient,
+    *,
+    refresh_interval: float,
+    setup_config: "SetupWizardConfig | None",
+):
     try:
         from textual.app import App, ComposeResult
         from textual.binding import Binding
@@ -61,24 +64,6 @@ def run(argv: list[str] | None = None) -> None:
 
     from patchrelay.tui.screens.setup_wizard import SetupWizardConfig
     from patchrelay.tui.screens.dashboard import DashboardView
-
-    preview = preview_setup(config.config)
-    try:
-        settings = load_settings(config.config)
-        worker = settings.worker.default
-    except ConfigError:
-        worker = preview.worker
-    setup_config = SetupWizardConfig(
-        config_path=config.config,
-        url=config.url,
-        token=config.token,
-        gateway_url=config.gateway_url,
-        gateway_token=config.gateway_token,
-        gateway_bind=config.gateway_bind,
-        worker=worker,
-        timeout=config.timeout,
-        interval=config.refresh_interval,
-    )
 
     class PatchRelayTUIApp(App[None]):
         TITLE = "PatchRelay"
@@ -101,11 +86,10 @@ def run(argv: list[str] | None = None) -> None:
             Binding("q", "quit", "Quit", show=True),
         ]
 
-        def __init__(self, client: PatchRelayClient, refresh_interval: float, config_path: str) -> None:
+        def __init__(self, client: PatchRelayClient, refresh_interval: float) -> None:
             super().__init__()
             self.client = client
             self.refresh_interval = refresh_interval
-            self.config_path = config_path
             self.setup_config = setup_config
 
         def compose(self) -> ComposeResult:
@@ -117,8 +101,33 @@ def run(argv: list[str] | None = None) -> None:
             if len(self.screen_stack) > 1:
                 self.pop_screen()
 
+    return PatchRelayTUIApp(client, refresh_interval)
+
+
+def run(argv: list[str] | None = None) -> None:
+    config = parse_args(argv)
+    from patchrelay.onboarding import preview_setup
+    from patchrelay.tui.screens.setup_wizard import SetupWizardConfig
+
+    preview = preview_setup(config.config)
+    try:
+        settings = load_settings(config.config)
+        worker = settings.worker.default
+    except ConfigError:
+        worker = preview.worker
+    setup_config = SetupWizardConfig(
+        config_path=config.config,
+        url=config.url,
+        token=config.token,
+        gateway_url=config.gateway_url,
+        gateway_token=config.gateway_token,
+        gateway_bind=config.gateway_bind,
+        worker=worker,
+        timeout=config.timeout,
+        interval=config.refresh_interval,
+    )
     client = PatchRelayClient(config.url, config.token, timeout=config.timeout)
-    PatchRelayTUIApp(client, config.refresh_interval, config.config).run()
+    create_tui_app(client, refresh_interval=config.refresh_interval, setup_config=setup_config).run()
 
 
 def main(argv: list[str] | None = None) -> None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from patchrelay.tui.app import create_tui_app
 from patchrelay.tui.screens.dashboard import _task_action_state, _task_worktree_path
 from patchrelay.tui.widgets.task_artifacts import ARTIFACT_VIEWS, TaskArtifactsPane
 
@@ -25,3 +26,12 @@ def test_task_artifacts_set_view_normalizes_invalid_view() -> None:
     pane = TaskArtifactsPane()
     assert ("Diff", "diff") in ARTIFACT_VIEWS
     assert pane.current_view() == "summary"
+
+
+def test_dashboard_app_factory_builds_app() -> None:
+    app = create_tui_app(
+        client=None,  # type: ignore[arg-type]
+        refresh_interval=0.1,
+        setup_config=None,
+    )
+    assert app is not None

@@ -1,44 +1,10 @@
 # PatchRelay 产品需求文档
 
-**文档版本**: v1.1  
-**创建日期**: 2026-06-09  
-**更新日期**: 2026-06-28  
-**当前状态**: ✅ **MVP 已完成并验证** — 所有核心功能已实现并通过生产级任务测试
-
 ## 1. 产品概述
 
 PatchRelay 是一个面向 Agent 编码任务的本地远程执行中继。它运行在开发者的本地机器或内网机器上，以 A2A Coding Execution Agent 的形式接收外部任务，把任务转交给本地专业编码工具，例如 Codex 和 Claude Code，并把进度、日志、diff、测试结果和最终状态返回给调用方。
 
 PatchRelay 不重建 IM 网关、不重建完整 Coding Agent、不直接承担聊天会话管理。OpenClaw 负责用户入口、聊天平台接入和会话编排；PatchRelay 负责工程执行侧的任务接收、执行隔离、worker 调度、Git 分支管理、测试结果采集和交付状态回传。
-
-### MVP 完成状态（2026-06-28）
-
-**已实现功能：**
-- ✅ 完整的端到端集成链路（OpenClaw → PatchRelay → Claude Code/Codex → 结果返回）
-- ✅ 一键启动脚本（`start.ps1` 启动 Gateway + Server + TUI + Dashboard）
-- ✅ OpenClaw 插件（`patchrelay_submit_task`, `patchrelay_get_task`, `patchrelay_cancel_task`）
-- ✅ Claude Code worker（`--dangerously-skip-permissions` 完全权限模式，非交互执行）
-- ✅ Codex worker（JSON 结构化输出模式）
-- ✅ Git worktree 隔离（每个任务独立分支 `patchrelay/task-<id>`）
-- ✅ 实时 TUI 监控界面（任务列表、实时日志、diff 查看、artifacts 展示）
-- ✅ HTTP REST API（提交、查询、取消、健康检查、agent card）
-- ✅ CLI 工具集（`init`, `doctor`, `smoke`, `submit`, `tasks`, `get`, `cancel`, `cleanup`, `runtime`, `openclaw apply`）
-- ✅ 测试运行器（可配置 test profile，超时和通过/失败检测）
-- ✅ 生产级任务验证（已成功执行真实编码任务）
-
-**架构实现：**
-- Python 3.10+ FastAPI 服务器
-- SQLite 任务持久化
-- Git worktree 在 `.patchrelay/worktrees/<id>` 中隔离
-- Textual 框架的 TUI 界面
-- TypeScript OpenClaw 插件（已构建和验证）
-
-**已知限制（MVP 范围内）：**
-- 串行任务队列（一次一个任务）
-- 单仓库支持
-- 无分布式 worker 池
-- 无高可用或故障转移
-- 需要手动清理旧 worktrees（或使用 `patchrelay cleanup`）
 
 核心链路如下：
 

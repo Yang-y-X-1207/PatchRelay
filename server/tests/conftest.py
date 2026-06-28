@@ -4,7 +4,6 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from patchrelay.app import create_app
 from patchrelay.config import RepoConfig, Settings, TestProfile as ConfigTestProfile
 from helpers import init_git_repo
 
@@ -20,6 +19,8 @@ def settings(tmp_path: Path) -> Settings:
 
 @pytest.fixture
 def client(settings: Settings) -> Generator[TestClient, None, None]:
+    from patchrelay.app import create_app
+
     with TestClient(create_app(settings)) as test_client:
         yield test_client
 
