@@ -58,25 +58,25 @@ class TaskArtifactsPane(Static):
     def show_task(self, task: dict[str, Any], *, display: dict[str, Any] | None = None) -> None:
         self._current_task = task
         self._current_display = display or {}
-        self._render()
+        self._update_display()
 
     def on_select_changed(self, event) -> None:  # noqa: ANN001
         if event.select.id != "artifact-view":
             return
         self._view = str(event.value or "summary")
-        self._render()
+        self._update_display()
 
     def set_view(self, view: str) -> None:
         self._view = view if view in {artifact_view for _, artifact_view in ARTIFACT_VIEWS} else "summary"
         select = self.query_one("#artifact-view", Select)
         if select.value != self._view:
             select.value = self._view
-        self._render()
+        self._update_display()
 
     def current_view(self) -> str:
         return self._view
 
-    def _render(self) -> None:
+    def _update_display(self) -> None:
         if not self._current_task:
             return
         header = (

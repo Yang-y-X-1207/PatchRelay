@@ -1,44 +1,10 @@
 # PatchRelay 产品需求文档
 
-**文档版本**: v1.1  
-**创建日期**: 2026-06-09  
-**更新日期**: 2026-06-28  
-**当前状态**: ✅ **MVP 已完成并验证** — 所有核心功能已实现并通过生产级任务测试
-
 ## 1. 产品概述
 
 PatchRelay 是一个面向 Agent 编码任务的本地远程执行中继。它运行在开发者的本地机器或内网机器上，以 A2A Coding Execution Agent 的形式接收外部任务，把任务转交给本地专业编码工具，例如 Codex 和 Claude Code，并把进度、日志、diff、测试结果和最终状态返回给调用方。
 
 PatchRelay 不重建 IM 网关、不重建完整 Coding Agent、不直接承担聊天会话管理。OpenClaw 负责用户入口、聊天平台接入和会话编排；PatchRelay 负责工程执行侧的任务接收、执行隔离、worker 调度、Git 分支管理、测试结果采集和交付状态回传。
-
-### MVP 完成状态（2026-06-28）
-
-**已实现功能：**
-- ✅ 完整的端到端集成链路（OpenClaw → PatchRelay → Claude Code/Codex → 结果返回）
-- ✅ 一键启动脚本（`start.ps1` 启动 Gateway + Server + TUI + Dashboard）
-- ✅ OpenClaw 插件（`patchrelay_submit_task`, `patchrelay_get_task`, `patchrelay_cancel_task`）
-- ✅ Claude Code worker（`--dangerously-skip-permissions` 完全权限模式，非交互执行）
-- ✅ Codex worker（JSON 结构化输出模式）
-- ✅ Git worktree 隔离（每个任务独立分支 `patchrelay/task-<id>`）
-- ✅ 实时 TUI 监控界面（任务列表、实时日志、diff 查看、artifacts 展示）
-- ✅ HTTP REST API（提交、查询、取消、健康检查、agent card）
-- ✅ CLI 工具集（`init`, `doctor`, `smoke`, `submit`, `tasks`, `get`, `cancel`, `cleanup`, `runtime`, `openclaw apply`）
-- ✅ 测试运行器（可配置 test profile，超时和通过/失败检测）
-- ✅ 生产级任务验证（已成功执行真实编码任务）
-
-**架构实现：**
-- Python 3.10+ FastAPI 服务器
-- SQLite 任务持久化
-- Git worktree 在 `.patchrelay/worktrees/<id>` 中隔离
-- Textual 框架的 TUI 界面
-- TypeScript OpenClaw 插件（已构建和验证）
-
-**已知限制（MVP 范围内）：**
-- 串行任务队列（一次一个任务）
-- 单仓库支持
-- 无分布式 worker 池
-- 无高可用或故障转移
-- 需要手动清理旧 worktrees（或使用 `patchrelay cleanup`）
 
 核心链路如下：
 
@@ -78,8 +44,6 @@ MVP 需要达成以下效果：
 - 执行结束后返回 changed files、diff、测试结果、日志摘要和最终状态。
 - MVP 默认不 commit、不 push、不创建 PR，避免高风险 Git 交付动作过早进入自动化。
 
-长期目标是在 Python 基本链路稳定后，把 PatchRelay 演进为双层架构：Java 控制面微服务负责高并发、高可用、调度、认证和任务主状态；Python 执行端退化为专注 Agent 执行的 worker executor，继续负责 Git worktree、Codex/Claude 调用、测试和 artifact 生成。这个演进不属于 MVP 首批范围，但 MVP 的任务模型、事件模型和 API 设计必须为后续拆分保留兼容空间。
-
 ## 3. 非目标
 
 PatchRelay MVP 不做以下事情：
@@ -93,7 +57,6 @@ PatchRelay MVP 不做以下事情：
 - 不自动 commit、push 或创建 PR。
 - 不在首版实现 Web 控制台。
 - 不在首版实现公网反向隧道。
-- 不在首版引入 Java 控制面微服务或分布式 worker 池。
 
 ## 4. 用户与场景
 
@@ -150,30 +113,6 @@ OpenClaw 适配层使用 TypeScript ESM。
 - 插件只负责把 OpenClaw tool call 映射为 PatchRelay HTTP/A2A 调用，不承担复杂执行逻辑。
 - TypeScript 能明确描述工具参数 schema，减少 OpenClaw 调用时的参数歧义。
 
-### 5.3 Java Control Service
-
-Java Control Service 是后续高并发、高可用阶段引入的控制面微服务，不参与 MVP 首批实现。
-
-选择：
-
-- Java 21 作为推荐运行版本。
-- Spring Boot 作为默认 Web 和服务治理框架候选。
-- 保留 Quarkus 作为轻量化部署候选，但除非有明确启动速度或原生镜像需求，否则不作为首选。
-
-原因：
-
-- Java 更适合长期运行的高并发 API 服务、任务调度服务和多实例高可用部署。
-- Java 生态在认证、限流、连接池、队列消费、监控、治理和企业部署方面更成熟。
-- 用户熟悉 Java，后续长期维护控制面时开发效率更高。
-- Python 已经适合 Agent 执行链路，不需要用 Java 重写 worker 执行细节。
-
-约束：
-
-- Java 服务只接管控制面，不直接执行 Codex/Claude，也不直接修改目标仓库。
-- Python 执行端必须先把任务协议、事件协议、artifact 协议稳定下来，再被 Java 调度。
-- 第一阶段 Java 与 Python 使用 HTTP+JSON 通信；只有在协议稳定且性能瓶颈明确后，才考虑 gRPC。
-- Java 控制面必须保持对当前外部 API 的兼容，避免 OpenClaw 插件和已有客户端被迫重写。
-
 ## 6. 技术栈选型
 
 ### 6.1 Python 后端
@@ -211,21 +150,6 @@ PatchRelay 依赖以下本地工具：
 - 项目测试命令所需的语言运行时和包管理工具。
 
 PatchRelay 不安装或管理 Codex、Claude Code、项目依赖，只在 `doctor` 检查中报告缺失项。
-
-### 6.4 Java 控制面微服务
-
-后续 Java Control Service 推荐使用以下技术栈：
-
-- Java 21：长期支持版本，适合生产部署。
-- Spring Boot：HTTP API、配置、健康检查、指标和服务集成。
-- Spring Security：认证、授权和 API 访问控制。
-- Micrometer / OpenTelemetry：指标、链路追踪和可观测性。
-- PostgreSQL：生产级任务主状态、审计记录、用户和配置持久化。
-- Redis 或兼容队列：任务排队、分布式锁、限流和短期状态缓存。
-- Flyway 或 Liquibase：数据库 schema 迁移。
-- Testcontainers：Java 集成测试中启动 PostgreSQL、Redis 和 Python executor fake service。
-
-第一版 Java 服务不直接替换 Python server，而是作为控制面代理当前 Python API。等控制面稳定后，再把 Python 收缩为只提供内部 executor API 的执行服务。
 
 ## 7. 协议选型
 
@@ -283,50 +207,6 @@ worker adapter 统一输出：
 
 Codex adapter 使用 Codex 非交互执行路径。Claude Code adapter 使用 Claude Code headless/print 模式和 stream-json 输出。
 
-### 7.4 Java-Python 内部协议
-
-Java 控制面引入后，外部客户端优先访问 Java API，Java 再通过内部协议调度一个或多个 Python executor。
-
-内部协议第一阶段使用 HTTP+JSON：
-
-```text
-Java Control Service
-  -> POST /internal/executions
-  -> GET /internal/executions/{id}
-  -> GET /internal/executions/{id}/events
-  -> POST /internal/executions/{id}:cancel
-  -> Python Executor Service
-```
-
-内部执行请求必须包含：
-
-- `executionId`：由 Java 控制面生成的全局执行 id。
-- `instruction`：用户任务说明。
-- `repoId` 或 repo 配置快照。
-- `baseBranch`。
-- `worker`：`auto`、`codex`、`claude` 或后续扩展 worker。
-- `testProfile`。
-- `limits`：超时、日志大小、diff 大小等执行限制。
-- `callback` 或事件拉取 cursor 配置。
-
-内部执行响应必须包含：
-
-- 当前状态和阶段。
-- 事件序列号。
-- worker 输出摘要。
-- changed files。
-- diff artifact 引用或内容。
-- test artifact。
-- error code 和 error message。
-
-协议要求：
-
-- `executionId` 必须幂等。Java 重试提交相同 `executionId` 时，Python 不能创建重复 worktree。
-- 事件必须按 `sequence` 单调递增，便于 Java 聚合 SSE/WebSocket。
-- cancel 必须是幂等操作。
-- Python executor 不保存用户、租户、权限等控制面概念。
-- Python executor 可以短期保存执行状态，但生产主状态以 Java 控制面的数据库为准。
-
 ## 8. 系统架构
 
 ### 8.1 模块划分
@@ -381,102 +261,6 @@ OpenClaw tool call
   -> return status + artifacts
   -> OpenClaw presents result to user
 ```
-
-### 8.3 架构演进路线
-
-PatchRelay 按三个阶段演进。
-
-阶段一：Python 单体执行闭环。
-
-```text
-OpenClaw / API Client
-        |
-        v
-Python PatchRelay Server
-  - auth
-  - task store
-  - serial queue
-  - Git worktree
-  - Codex / Claude worker
-  - tests
-  - artifacts
-        |
-        v
-Target Repository
-```
-
-目标是证明 Agent 编码任务的真实闭环：能接任务、能隔离执行、能运行 worker、能测试、能返回 diff 和事件。
-
-阶段二：Java 控制面代理 Python 执行端。
-
-```text
-OpenClaw / API Client
-        |
-        v
-Java Control Service
-  - public API
-  - auth
-  - task master state
-  - queue
-  - rate limit
-  - scheduler
-        |
-        v
-Python PatchRelay Executor
-  - Git worktree
-  - Codex / Claude worker
-  - tests
-  - artifacts
-```
-
-目标是在不破坏 Python 执行能力的前提下，把高并发入口、主状态和调度能力迁到 Java。
-
-阶段三：Python 退化为横向扩展 executor。
-
-```text
-OpenClaw / API Client
-        |
-        v
-Java Control Service Cluster
-        |
-        v
-Distributed Queue / Scheduler
-        |
-        +--> Python Executor Node A
-        +--> Python Executor Node B
-        +--> Python Executor Node C
-```
-
-目标是让 Python executor 成为可注册、可探活、可调度、可替换的执行节点；Java 控制面负责 worker 池、任务恢复、重试、审计和高可用。
-
-### 8.4 Java 与 Python 职责边界
-
-Java Control Service 负责：
-
-- 对外统一 API。
-- 用户、token、权限和租户边界。
-- 任务主状态和审计记录。
-- 队列、优先级、限流和重试。
-- executor 注册、探活和调度。
-- SSE/WebSocket 事件聚合。
-- 高可用部署、监控、告警和运维入口。
-- Git 交付审批流的主状态管理。
-
-Python Executor 负责：
-
-- 创建 Git branch 和 worktree。
-- 调用 Codex / Claude / fake worker。
-- 管理 worker 进程树、超时和取消。
-- 运行 test profile。
-- 收集 changed files、diff、worker 输出和测试结果。
-- 生成 artifacts。
-- 回传结构化事件 timeline。
-
-明确不跨界：
-
-- Java 不直接运行 Codex/Claude，不直接进入目标仓库修改文件。
-- Python 不承担用户体系、租户体系、全局队列、生产审计和多实例调度。
-- OpenClaw 插件不感知 Java/Python 内部分层，只调用稳定的 PatchRelay 外部 API。
 
 ## 9. 配置设计
 
