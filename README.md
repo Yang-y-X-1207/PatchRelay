@@ -2,76 +2,89 @@
 
 Language: English | [Simplified Chinese](README.zh-CN.md)
 
-PatchRelay is a local execution relay for agentic coding tasks. It receives coding requests from OpenClaw or another gateway, dispatches them to a local coding worker such as Claude Code or Codex, and returns task status, logs, diffs, test results, and final artifacts.
+PatchRelay is a local execution relay for agentic coding tasks. It receives coding requests from OpenClaw or another gateway, sends the work to a local coding worker such as Claude Code or Codex, and returns task status, logs, diffs, test results, and artifacts.
 
-The current project stage is **basic usable MVP**. The verified path is:
+For hands-on startup and testing, start with the quick start guide: [USAGE.md](USAGE.md).
+
+## Current Stage
+
+PatchRelay is currently a **basic usable MVP**. The single-node execution loop is implemented and has been verified locally:
 
 ```text
-OpenClaw Gateway/Dashboard
+OpenClaw Dashboard/Gateway
   -> PatchRelay OpenClaw plugin
-  -> PatchRelay server
-  -> Claude Code worker
-  -> PatchRelay artifacts
-  -> OpenClaw result view
+  -> PatchRelay Python server
+  -> Claude Code or Codex worker
+  -> Git worktree, tests, artifacts
+  -> OpenClaw result view or PatchRelay TUI
 ```
 
-In this design, OpenClaw should only receive the user request, invoke PatchRelay tools, and display the returned result. The actual command execution and code modification happen inside the worker launched by PatchRelay, for example Claude Code.
+The project is not yet a production high-availability system. The current focus is a stable local loop: submit a coding task, isolate it in a Git worktree, run a configured worker, collect artifacts, and inspect the result.
 
-## Current Status
+## Implemented
 
-The basic three-end integration has been verified:
+- Python FastAPI PatchRelay server with bearer-token protected task APIs.
+- A2A-like endpoints: health, agent card, message send/stream, task list/get/events/cancel.
+- SQLite-backed local task persistence.
+- Serial task queue: one task runs at a time in the current MVP.
+- Git branch and worktree isolation per task.
+- Worker adapters for `fake`, `claude`, and `codex`.
+- Configurable test profiles that run after worker execution.
+- Artifact collection for summary, changed files, diff, worker logs, and test output.
+- OpenClaw TypeScript plugin exposing `patchrelay_submit_task`, `patchrelay_get_task`, and `patchrelay_cancel_task`.
+- OpenClaw setup helpers for plugin install/config patching.
+- CLI commands for init, setup, doctor, runtime start/status/stop, smoke tests, submit, wait, logs, tasks, cancel, and cleanup.
+- Full-screen Textual TUI with task dashboard, filtering, task detail, artifact preview, task submission, setup wizard, runtime controls, smoke test action, auto-refresh, and keyboard shortcuts.
+- Windows PowerShell `server/start.ps1` and `server/stop.ps1` scripts for local one-command startup/shutdown.
 
-- OpenClaw Gateway can load the `patchrelay` plugin.
-- OpenClaw Gateway can invoke PatchRelay through `/tools/invoke`.
-- PatchRelay can receive and persist tasks.
-- PatchRelay can create a task branch and Git worktree.
-- PatchRelay can run Claude Code as the real coding worker.
-- PatchRelay can collect changed files, diff, worker logs, and test results.
-- OpenClaw can fetch the final task result through `patchrelay_get_task`.
+## Not Implemented Yet
 
-This is not yet a high-availability, high-reliability, high-concurrency production system. Those are explicit later-stage goals. The current priority is a clear and stable single-node execution loop.
+- Distributed task queue or multi-worker pool.
+- High-availability control plane.
+- Multi-repository registry and per-repo permission model.
+- Automatic commit, push, or pull request creation by default.
+- Cloud relay or reverse tunnel mode.
+- Production-grade auth, audit, rate limiting, and tenancy.
+- Java control-plane microservice. This remains a later-stage architecture plan after the Python local loop is stable.
 
-## What PatchRelay Does
+## Quick Start
 
-PatchRelay is intentionally a bridge layer, not a replacement for OpenClaw or Claude Code.
+The user-facing quick start lives in [USAGE.md](USAGE.md). It covers:
 
-- Accepts remote coding tasks from OpenClaw or an API client.
-- Normalizes them into a simple task protocol.
-- Queues tasks serially in the current MVP.
-- Creates an isolated Git branch/worktree per task.
-- Dispatches the instruction to a selected worker: `fake`, `claude`, or `codex`.
-- Runs a configured test profile after worker execution.
-- Returns status, logs, changed files, diff, worker output, and test result.
+- installing dependencies
+- running `server/start.ps1`
+- starting OpenClaw Gateway, PatchRelay Server, PatchRelay TUI, and OpenClaw Dashboard
+- submitting a task from OpenClaw
+- watching task progress in the TUI
+- stopping services with `server/stop.ps1`
+- common local troubleshooting
 
-## What PatchRelay Does Not Do
+Short version:
 
-- It does not rebuild an IM gateway.
-- It does not implement a full coding agent from scratch.
-- It does not require OpenClaw to execute shell commands in the target repository.
-- It does not automatically push Git changes in the MVP flow.
-- It does not yet provide production-grade clustering, distributed queues, or worker pools.
+```powershell
+cd C:\path\to\PatchRelay\server
+.\start.ps1
+```
 
-If you want to enforce that OpenClaw never edits files directly, configure OpenClaw so the agent only has access to the PatchRelay tools:
-
-- `patchrelay_submit_task`
-- `patchrelay_get_task`
-- `patchrelay_cancel_task`
-
-Avoid exposing unrelated shell, exec, or direct code-editing tools to that OpenClaw agent.
+Then wait for the Gateway, server, TUI, and browser dashboard to finish starting. See [USAGE.md](USAGE.md) for the complete walkthrough.
 
 ## Repository Layout
 
 ```text
 .
-|-- MEMORY.md                # Product memory and direction notes
-|-- prd.md                   # Product requirements document
-|-- server/                  # Python PatchRelay Core API and CLI
-|-- plugins/openclaw/        # OpenClaw tool plugin
+|-- README.md               # Project overview and current status
+|-- README.zh-CN.md         # Chinese README
+|-- USAGE.md                # Quick start and local testing guide
+|-- prd.md                  # Product requirements and roadmap notes
+|-- ARCHITECTURE_ROADMAP.md # Architecture evolution notes
+|-- server/                 # Python PatchRelay server, CLI, TUI, scripts
+|-- plugins/openclaw/       # OpenClaw TypeScript plugin
+|-- docs/                   # Additional planning and product documents
 ```
 
 ## Requirements
 
-Recommended environment:
+Recommended local environment:
 
 - Windows 10/11
 - Git
@@ -80,10 +93,10 @@ Recommended environment:
 - Node.js 22+
 - npm
 - OpenClaw 2026.6.1 or newer
-- Claude Code CLI if you want the Claude worker
-- Codex CLI if you want the Codex worker
+- Claude Code CLI for the Claude worker
+- Codex CLI for the Codex worker
 
-Check local tools:
+Check tools:
 
 ```powershell
 git --version
@@ -96,363 +109,65 @@ claude --version
 codex --version
 ```
 
-## Install Dependencies
+## Install
 
 From the repository root:
 
 ```powershell
-cd C:\Users\57826\IdeaProjects\PatchRelay\PatchRelay
-```
-
-Install the PatchRelay server dependencies:
-
-```powershell
 cd .\server
-uv sync --extra dev
-```
+uv sync --extra dev --extra tui
 
-Install the OpenClaw plugin dependencies:
-
-```powershell
 cd ..\plugins\openclaw
 npm install
 npm run build
 ```
 
-## PatchRelay Configuration
-
-Generate a server config:
+Generate or repair local configuration:
 
 ```powershell
-cd C:\Users\57826\IdeaProjects\PatchRelay\PatchRelay\server
-uv run patchrelay init --config .\patchrelay.yaml
-```
-
-For a guided yes/no setup:
-
-```powershell
+cd ..\..\server
 uv run patchrelay setup --config .\patchrelay.yaml
 ```
 
-`patchrelay setup` prints detected defaults and only asks yes/no questions before writing config, repairing an existing config, running doctor checks, applying OpenClaw setup, or running a Gateway smoke test. When the config already exists, setup previews repairable issues first and only writes changes after confirmation.
-
-For demos and scripts, accept the default yes/no choices:
+For non-interactive local defaults:
 
 ```powershell
 uv run patchrelay setup --config .\patchrelay.yaml --yes
 ```
 
-Check the current setup state without changing anything:
+## Common Commands
+
+Run diagnostics:
 
 ```powershell
-uv run patchrelay setup status --config .\patchrelay.yaml
-```
-
-`setup status` checks the config, doctor checks, PatchRelay `/health`, and OpenClaw Gateway tool reachability.
-
-For scripting or CI, print the same status as JSON:
-
-```powershell
-uv run patchrelay setup status --config .\patchrelay.yaml --json
-```
-
-Preview repairs for common local config issues:
-
-```powershell
-uv run patchrelay setup repair --config .\patchrelay.yaml
-```
-
-`setup repair` can create a missing config, replace a blank or default token, fix missing repo/base branch values, restore worker commands, add the default test profile, and fill default limits. It is dry-run by default; add `--apply` to write the repaired YAML:
-
-```powershell
-uv run patchrelay setup repair --config .\patchrelay.yaml --apply
-```
-
-For scripting or CI, print repair plans and results as JSON:
-
-```powershell
-uv run patchrelay setup repair --config .\patchrelay.yaml --json
-```
-
-To combine status and repair checks in one non-destructive command:
-
-```powershell
+uv run patchrelay doctor --config .\patchrelay.yaml
 uv run patchrelay setup verify --config .\patchrelay.yaml
 ```
 
-`setup verify` prints the status checks, repair plan, and recommended next steps. Add `--json` if you want a structured payload.
-
-Start the local runtime services after configuration:
+Start managed runtime services:
 
 ```powershell
-uv run patchrelay setup start --config .\patchrelay.yaml
-```
-
-This starts the PatchRelay server in the background, starts OpenClaw Gateway when `openclaw` is available on PATH, and checks that the configured Codex and Claude CLI commands are ready. Codex and Claude are not long-running services; PatchRelay launches them automatically for each task.
-
-Inspect or stop the managed runtime:
-
-```powershell
-uv run patchrelay runtime status --config .\patchrelay.yaml
-uv run patchrelay runtime stop --config .\patchrelay.yaml
-```
-
-Use `--json` for structured output. Runtime state and logs are written under the configured repo `state_dir`, for example `.patchrelay\runtime.json` and `.patchrelay\runtime\*.log`.
-
-`patchrelay init` detects the current Git repository, current branch, available worker commands, a default test command, and writes a random local bearer token.
-
-For scripted setup, pass explicit values:
-
-```powershell
-uv run patchrelay init `
-  --config .\patchrelay.yaml `
-  --force `
-  --yes `
-  --repo-path C:\path\to\your\repo `
-  --base-branch main `
-  --worker claude `
-  --test-command "python -m pytest" `
-  --token change-me
-```
-
-You can still copy `server/examples/patchrelay.yaml` manually if you want to start from the sample file.
-
-Example `patchrelay.yaml`:
-
-```yaml
-server:
-  host: 127.0.0.1
-  port: 8787
-  token: change-me
-
-repo:
-  path: C:/path/to/your/repo
-  base_branch: main
-  state_dir: .patchrelay
-
-worker:
-  default: claude
-  codex_command: codex
-  claude_command: claude
-
-tests:
-  default:
-    command: ["python", "-m", "pytest"]
-
-limits:
-  max_log_bytes: 1048576
-  max_diff_bytes: 5242880
-  task_timeout_seconds: 3600
-```
-
-Important fields:
-
-- `server.token`: bearer token required by PatchRelay clients.
-- `repo.path`: target repository that workers will modify.
-- `repo.base_branch`: branch used as the base for task worktrees.
-- `worker.default`: default worker when the request uses `auto`.
-- `tests.default.command`: command run after the worker finishes.
-- `limits.task_timeout_seconds`: worker timeout.
-
-For a lightweight demo, use `server/examples/demo.patchrelay.yaml`; it uses the `fake` worker and a simple test command.
-
-## PatchRelay TUI
-
-PatchRelay also ships with a full-screen TUI for onboarding and day-to-day task control. It reads the same `patchrelay.yaml` file as the CLI and talks to the same PatchRelay server.
-
-Install the optional TUI dependency set:
-
-```powershell
-cd C:\Users\57826\IdeaProjects\PatchRelay\PatchRelay\server
-uv sync --extra tui
-```
-
-Launch the dashboard:
-
-```powershell
-uv run patchrelay ui `
-  --config .\patchrelay.yaml `
-  --url http://127.0.0.1:8787 `
-  --token change-me `
-  --gateway-url http://127.0.0.1:19001 `
-  --gateway-token openclaw-local-token `
-  --gateway-bind loopback
-```
-
-If your `patchrelay.yaml` already points at the running server and gateway, you can shorten the command to `uv run patchrelay ui --config .\patchrelay.yaml`.
-
-The TUI workflow is:
-
-```mermaid
-sequenceDiagram
-  participant User
-  participant TUI as PatchRelay TUI
-  participant Server as PatchRelay Server
-  participant Gateway as OpenClaw Gateway
-  participant Worker as Claude/Codex Worker
-
-  User->>TUI: launch patchrelay ui
-  TUI->>Server: GET /health
-  TUI->>Server: GET /tasks
-  User->>TUI: open Setup wizard
-  TUI->>Server: setup status / verify / repair
-  TUI->>Gateway: setup smoke via /tools/invoke
-  User->>TUI: submit task
-  TUI->>Server: POST /message:send
-  Server->>Worker: create worktree and run worker
-  Worker->>Server: edits, logs, test result
-  Server->>TUI: refreshed task list, detail, artifacts, events
-  User->>TUI: inspect, copy, open, or cancel task
-```
-
-Common dashboard shortcuts:
-
-- `r`: refresh
-- `f`: focus search
-- `s`: submit task
-- `u` or `z`: open the setup wizard
-- `x`: cancel the selected task
-- `c`: copy the selected task id
-- `y`: copy the selected diff
-- `w`: copy the selected worktree path
-- `d`: focus the diff artifact
-- `o`: open the selected worktree
-- `v`: cycle the detail view
-- `p`: pause or resume auto-refresh
-- `Esc`: close a modal
-- `q`: quit
-
-The setup wizard uses the same config file and can run these actions:
-
-- `status`: check the local config, PatchRelay `/health`, and OpenClaw Gateway reachability
-- `verify`: combine status checks with repair recommendations
-- `repair`: apply config repair suggestions
-- `setup`: run the guided onboarding flow
-- `start runtime`: start the local PatchRelay/OpenClaw runtime
-- `stop runtime`: stop the managed runtime
-- `smoke`: submit a minimal task and wait for the result
-
-Typical TUI use looks like this:
-
-1. Run `patchrelay ui`.
-2. Open the setup wizard with `u` or `z`.
-3. Use `status` or `verify` to check the current environment.
-4. Run `repair` or `setup` if the config needs fixing.
-5. Start the runtime from the wizard or with `patchrelay setup start`.
-6. Submit a task from the dashboard with `s`.
-7. Watch the task list update, then open the task detail, artifacts, and events panes.
-8. Copy the diff or worktree path, open the worktree, or cancel the task if needed.
-
-## Start PatchRelay
-
-One-command local runtime startup:
-
-```powershell
-cd C:\Users\57826\IdeaProjects\PatchRelay\PatchRelay\server
 uv run patchrelay runtime start --config .\patchrelay.yaml
-```
-
-Check the managed processes and worker CLI readiness:
-
-```powershell
 uv run patchrelay runtime status --config .\patchrelay.yaml
-```
-
-Stop managed PatchRelay/OpenClaw processes:
-
-```powershell
 uv run patchrelay runtime stop --config .\patchrelay.yaml
 ```
 
-Manual server startup is still supported when you want a foreground process:
+Run the TUI:
 
 ```powershell
-uv run patchrelay serve --config .\patchrelay.yaml
+uv run patchrelay ui --config .\patchrelay.yaml
 ```
 
-Expected runtime/doctor checks:
-
-- repo is valid
-- git is available
-- configured worker commands are available
-- `default` test profile exists
-
-## Local CLI Usage
-
-Run a local smoke test against a running PatchRelay server:
+Run a local smoke test:
 
 ```powershell
 uv run patchrelay smoke --config .\patchrelay.yaml --worker fake
 ```
 
-Submit a fake-worker task:
+Submit a task directly to PatchRelay:
 
 ```powershell
-uv run patchrelay submit "Create a demo fake worker change" --worker fake --wait --token change-me
-```
-
-Follow task events while waiting:
-
-```powershell
-uv run patchrelay submit "Create a demo fake worker change" --worker fake --wait --token change-me
-uv run patchrelay wait <task-id> --follow --token change-me
-```
-
-Print a task event timeline:
-
-```powershell
-uv run patchrelay logs <task-id> --token change-me
-```
-
-Submit a Claude Code task:
-
-```powershell
-uv run patchrelay submit "Add a short Usage section to README.md" --worker claude --wait --token change-me
-```
-
-List tasks:
-
-```powershell
-uv run patchrelay tasks --token change-me
-```
-
-Fetch raw JSON:
-
-```powershell
-uv run patchrelay tasks --token change-me --json
-```
-
-Preview cleanup:
-
-```powershell
-uv run patchrelay cleanup --config .\patchrelay.yaml
-```
-
-Remove PatchRelay worktrees, `patchrelay/*` branches, and local state:
-
-```powershell
-uv run patchrelay cleanup --config .\patchrelay.yaml --force
-```
-
-## OpenClaw Integration
-
-Print OpenClaw setup commands from the current PatchRelay config:
-
-```powershell
-cd C:\Users\57826\IdeaProjects\PatchRelay\PatchRelay\server
-uv run patchrelay openclaw --config .\patchrelay.yaml
-```
-
-Preview the OpenClaw setup steps:
-
-```powershell
-uv run patchrelay openclaw apply --config .\patchrelay.yaml
-```
-
-Apply the OpenClaw setup:
-
-```powershell
-uv run patchrelay openclaw apply --config .\patchrelay.yaml --apply
+uv run patchrelay submit "Add a short usage note to README.md" --worker fake --wait --token <patchrelay-token>
 ```
 
 Run a smoke test through OpenClaw Gateway:
@@ -466,159 +181,36 @@ uv run patchrelay smoke `
   --gateway-token openclaw-local-token
 ```
 
-This calls `patchrelay_submit_task` and `patchrelay_get_task` through Gateway `/tools/invoke`. Run `patchrelay runtime start` first if PatchRelay server or OpenClaw Gateway is not already running.
+## OpenClaw Integration
 
 Build and validate the plugin:
 
 ```powershell
-cd C:\Users\57826\IdeaProjects\PatchRelay\PatchRelay\plugins\openclaw
+cd .\plugins\openclaw
 npm run plugin:validate
 ```
 
 Install the local plugin into OpenClaw:
 
 ```powershell
-openclaw plugins install C:\Users\57826\IdeaProjects\PatchRelay\PatchRelay\plugins\openclaw --link
+openclaw plugins install C:\path\to\PatchRelay\plugins\openclaw --link
 ```
 
-Configure the plugin:
+Apply OpenClaw setup from the PatchRelay config:
 
 ```powershell
-@'
-{
-  plugins: {
-    entries: {
-      patchrelay: {
-        enabled: true,
-        config: {
-          baseUrl: "http://127.0.0.1:8787",
-          token: "change-me"
-        }
-      }
-    }
-  }
-}
-'@ | openclaw config patch --stdin
-```
-
-Inspect the plugin runtime:
-
-```powershell
+cd C:\path\to\PatchRelay\server
+uv run patchrelay openclaw apply --config .\patchrelay.yaml --apply
 openclaw plugins inspect patchrelay --runtime --json
 ```
 
-The plugin should expose:
+OpenClaw should expose:
 
 - `patchrelay_submit_task`
 - `patchrelay_get_task`
 - `patchrelay_cancel_task`
 
-## OpenClaw Gateway Flow
-
-Start the OpenClaw Gateway:
-
-```powershell
-openclaw gateway run --port 19001 --auth token --token openclaw-local-token --bind loopback --force
-```
-
-Check Gateway health:
-
-```powershell
-openclaw gateway call health --url ws://127.0.0.1:19001 --token openclaw-local-token --json
-```
-
-The health response should include `patchrelay` in `plugins.loaded`.
-
-Submit a PatchRelay task through OpenClaw Gateway HTTP tools:
-
-```powershell
-$body = @{
-  name = "patchrelay_submit_task"
-  args = @{
-    instruction = "Add a short Usage section to README.md"
-    worker = "claude"
-    testProfile = "default"
-  }
-} | ConvertTo-Json -Depth 8
-
-Invoke-RestMethod `
-  -Method Post `
-  -Uri "http://127.0.0.1:19001/tools/invoke" `
-  -Headers @{ Authorization = "Bearer openclaw-local-token" } `
-  -ContentType "application/json" `
-  -Body $body
-```
-
-Fetch the result through OpenClaw Gateway:
-
-```powershell
-$taskId = "<task id returned by patchrelay_submit_task>"
-$body = @{
-  name = "patchrelay_get_task"
-  args = @{ taskId = $taskId }
-} | ConvertTo-Json -Depth 8
-
-Invoke-RestMethod `
-  -Method Post `
-  -Uri "http://127.0.0.1:19001/tools/invoke" `
-  -Headers @{ Authorization = "Bearer openclaw-local-token" } `
-  -ContentType "application/json" `
-  -Body $body
-```
-
-Expected result:
-
-- `status` is `completed`
-- `worker` is `claude`
-- `artifacts.patchrelay.summary.content.testStatus` is `passed`
-- `artifacts.patchrelay.diff.content` contains the code diff
-
-## OpenClaw Dashboard
-
-Open the Dashboard:
-
-```powershell
-openclaw dashboard
-```
-
-For a non-interactive URL only:
-
-```powershell
-openclaw dashboard --no-open --yes
-```
-
-The Dashboard talks to the running Gateway. The intended usage is:
-
-```text
-User request
-  -> OpenClaw Dashboard/Gateway
-  -> patchrelay_submit_task
-  -> PatchRelay server
-  -> Claude Code worker
-  -> patchrelay_get_task
-  -> Dashboard result
-```
-
-## API Shape
-
-PatchRelay accepts an A2A-like request:
-
-```json
-{
-  "message": {
-    "role": "ROLE_USER",
-    "parts": [
-      { "text": "Add a short Usage section to README.md" }
-    ]
-  },
-  "metadata": {
-    "patchrelay": {
-      "worker": "claude",
-      "testProfile": "default"
-    }
-  }
-}
-```
+## API Surface
 
 Main server endpoints:
 
@@ -631,35 +223,35 @@ Main server endpoints:
 - `GET /tasks/{task_id}/events`
 - `POST /tasks/{task_id}:cancel`
 
-Task responses include `eventCount`, `latestEvent`, and recent `events`. Use `/tasks/{task_id}/events?after=<sequence>` to page new timeline events.
+Task responses include status, worker, phase, branch, worktree path, events, and artifacts. Event timelines can be paged with `/tasks/{task_id}/events?after=<sequence>`.
 
 ## Development Verification
 
 Run server tests:
 
 ```powershell
-cd C:\Users\57826\IdeaProjects\PatchRelay\PatchRelay\server
+cd .\server
 uv run pytest
 ```
 
 Run plugin tests:
 
 ```powershell
-cd C:\Users\57826\IdeaProjects\PatchRelay\PatchRelay\plugins\openclaw
+cd .\plugins\openclaw
 npm test
 npm run plugin:validate
 ```
 
 ## MVP Limits
 
-The current MVP intentionally keeps the system small:
+The MVP intentionally keeps the system small:
 
 - one local repository first
-- one task at a time through a serial queue
-- branch-per-task Git worktree isolation
+- one task at a time
+- branch/worktree isolation per task
 - local SQLite task persistence
-- manual cleanup
-- no automatic Git push by default
+- manual cleanup via `patchrelay cleanup`
+- no automatic Git push or PR creation by default
 - no distributed worker pool yet
 
-Later stages should add high availability, high reliability, and high concurrency without changing the core contract: OpenClaw dispatches and displays; PatchRelay relays and records; Claude Code or another worker executes.
+The long-term direction is to keep Python focused on the agent execution path, then introduce a Java control-plane service later for high concurrency, high availability, scheduling, auth, and production operations.

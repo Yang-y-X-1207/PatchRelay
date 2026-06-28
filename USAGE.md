@@ -5,7 +5,7 @@
 在 PowerShell 中运行：
 
 ```powershell
-cd C:\Users\57826\IdeaProjects\PatchRelay\PatchRelay-tui\server
+cd C:\path\to\PatchRelay\server
 .\start.ps1
 ```
 
@@ -180,7 +180,7 @@ PatchRelay 收集结果（diff, 日志, 测试结果）
 
 ```powershell
 # 1. 启动环境
-cd C:\Users\57826\IdeaProjects\PatchRelay\PatchRelay-tui\server
+cd C:\path\to\PatchRelay\server
 .\start.ps1
 
 # 2. 等待 30 秒让所有服务就绪
@@ -210,7 +210,7 @@ cd C:\Users\57826\IdeaProjects\PatchRelay\PatchRelay-tui\server
 
 - 查看服务状态：`uv run patchrelay runtime status --config .\patchrelay.yaml`
 - 查看任务列表：`uv run patchrelay tasks --token <your-token>`
-- 查看任务详情：`uv run patchrelay get <task-id> --token <your-token>`
+- 查看任务事件：`uv run patchrelay logs <task-id> --token <your-token>`
 - 清理旧任务：`uv run patchrelay cleanup --config .\patchrelay.yaml --force`
 
 ---

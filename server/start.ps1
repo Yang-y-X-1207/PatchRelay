@@ -7,7 +7,7 @@ Write-Host "  PatchRelay Environment Startup" -ForegroundColor White
 Write-Host "================================================" -ForegroundColor Cyan
 Write-Host ""
 
-$ServerDir = "C:\Users\57826\IdeaProjects\PatchRelay\PatchRelay-tui\server"
+$ServerDir = $PSScriptRoot
 
 # Ensure we're in the right directory
 Set-Location $ServerDir
