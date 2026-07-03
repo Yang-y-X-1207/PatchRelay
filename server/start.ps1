@@ -7,6 +7,40 @@ Write-Host "  PatchRelay Environment Startup" -ForegroundColor White
 Write-Host "================================================" -ForegroundColor Cyan
 Write-Host ""
 
+function Add-WindowsPathEntry {
+    param([string]$Entry)
+
+    if ([string]::IsNullOrWhiteSpace($Entry) -or -not (Test-Path $Entry)) {
+        return
+    }
+
+    $parts = @($env:Path -split ';' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if ($parts -notcontains $Entry) {
+        $env:Path = "$Entry;$env:Path"
+    }
+}
+
+$WindowsRoot = $env:SystemRoot
+if ([string]::IsNullOrWhiteSpace($WindowsRoot)) {
+    $WindowsRoot = $env:WINDIR
+}
+if ([string]::IsNullOrWhiteSpace($WindowsRoot)) {
+    $WindowsRoot = "C:\Windows"
+}
+
+Add-WindowsPathEntry (Join-Path $WindowsRoot "System32")
+Add-WindowsPathEntry (Join-Path $WindowsRoot "System32\Wbem")
+Add-WindowsPathEntry (Join-Path $WindowsRoot "System32\WindowsPowerShell\v1.0")
+
+$PowerShellExe = Join-Path $WindowsRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+if (-not (Test-Path $PowerShellExe)) {
+    $PowerShellExe = "powershell"
+}
+$CmdExe = Join-Path $WindowsRoot "System32\cmd.exe"
+if (-not (Test-Path $CmdExe)) {
+    $CmdExe = "cmd.exe"
+}
+
 $ServerDir = $PSScriptRoot
 
 # Ensure we're in the right directory
@@ -27,26 +61,26 @@ Write-Host ""
 
 # 1. Launch OpenClaw Gateway
 Write-Host "[1/4] Launching OpenClaw Gateway..." -ForegroundColor Yellow
-$gatewayCmd = "Write-Host '================================================' -ForegroundColor Cyan; Write-Host '  OpenClaw Gateway' -ForegroundColor White; Write-Host '  Port: 19001' -ForegroundColor Yellow; Write-Host '================================================' -ForegroundColor Cyan; Write-Host ''; openclaw gateway"
-Start-Process powershell -ArgumentList "-NoExit", "-Command", $gatewayCmd
+$gatewayCmd = "Set-Location '$ServerDir'; `$env:OPENCLAW_SKIP_STARTUP_MODEL_PREWARM = '1'; Write-Host '================================================' -ForegroundColor Cyan; Write-Host '  OpenClaw Gateway' -ForegroundColor White; Write-Host '  Port: 19001' -ForegroundColor Yellow; Write-Host '================================================' -ForegroundColor Cyan; Write-Host ''; openclaw gateway run --port 19001 --auth token --token openclaw-local-token --bind loopback --force"
+Start-Process $PowerShellExe -ArgumentList "-NoExit", "-Command", $gatewayCmd
 Start-Sleep -Seconds 4
 
 # 2. Launch PatchRelay Server
 Write-Host "[2/4] Launching PatchRelay Server..." -ForegroundColor Yellow
 $serverCmd = "Set-Location '$ServerDir'; Write-Host '================================================' -ForegroundColor Cyan; Write-Host '  PatchRelay Server' -ForegroundColor White; Write-Host '  Port: 8787' -ForegroundColor Yellow; Write-Host '================================================' -ForegroundColor Cyan; Write-Host ''; Write-Host 'Waiting for Gateway...' -ForegroundColor Gray; Start-Sleep 6; uv run patchrelay serve --config .\patchrelay.yaml"
-Start-Process powershell -ArgumentList "-NoExit", "-Command", $serverCmd
+Start-Process $PowerShellExe -ArgumentList "-NoExit", "-Command", $serverCmd
 Start-Sleep -Seconds 4
 
 # 3. Launch PatchRelay TUI
 Write-Host "[3/4] Launching PatchRelay TUI..." -ForegroundColor Yellow
 $tuiCmd = "Set-Location '$ServerDir'; Write-Host '================================================' -ForegroundColor Cyan; Write-Host '  PatchRelay TUI Monitor' -ForegroundColor White; Write-Host '================================================' -ForegroundColor Cyan; Write-Host ''; Write-Host 'Waiting for services...' -ForegroundColor Gray; Start-Sleep 12; uv run patchrelay ui --config .\patchrelay.yaml --url http://127.0.0.1:8787 --token $token --gateway-url http://127.0.0.1:19001 --gateway-token openclaw-local-token --gateway-bind loopback"
-Start-Process powershell -ArgumentList "-NoExit", "-Command", $tuiCmd
+Start-Process $PowerShellExe -ArgumentList "-NoExit", "-Command", $tuiCmd
 Start-Sleep -Seconds 3
 
 # 4. Open Dashboard
 Write-Host "[4/4] Opening OpenClaw Dashboard..." -ForegroundColor Yellow
 Start-Sleep -Seconds 6
-Start-Process cmd.exe -ArgumentList "/c", "openclaw dashboard --yes" -WindowStyle Hidden
+Start-Process $CmdExe -ArgumentList "/c", "openclaw dashboard --yes" -WindowStyle Hidden
 
 Write-Host ""
 Write-Host "================================================" -ForegroundColor Green

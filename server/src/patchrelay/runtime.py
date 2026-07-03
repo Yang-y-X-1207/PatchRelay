@@ -9,7 +9,7 @@ import sys
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 from urllib.parse import urlparse
 
@@ -173,7 +173,9 @@ class RuntimeManager:
             self.options.gateway_bind,
             "--force",
         ]
-        process = launch_background_process(command, cwd=Path.cwd(), env=os.environ.copy(), log_path=log_path)
+        env = with_windows_system_path(os.environ.copy())
+        env.setdefault("OPENCLAW_SKIP_STARTUP_MODEL_PREWARM", "1")
+        process = launch_background_process(command, cwd=Path.cwd(), env=env, log_path=log_path)
         state["openclaw_gateway"] = process_state(
             name="openclaw_gateway",
             pid=process.pid,
@@ -316,6 +318,31 @@ class RuntimeManager:
     @property
     def patchrelay_url(self) -> str:
         return f"http://{self.settings.server.host}:{self.settings.server.port}"
+
+
+def with_windows_system_path(env: dict[str, str]) -> dict[str, str]:
+    if os.name != "nt":
+        return env
+
+    updated = env.copy()
+    path_key = "Path" if "Path" in updated else next((key for key in updated if key.lower() == "path"), "Path")
+    current_entries = [
+        entry for entry in updated.get(path_key, "").split(";") if entry
+    ]
+    existing = {entry.lower() for entry in current_entries}
+    system_root = PureWindowsPath(updated.get("SystemRoot") or updated.get("WINDIR") or r"C:\Windows")
+    required_entries = [
+        str(system_root / "System32"),
+        str(system_root / "System32" / "Wbem"),
+        str(system_root / "System32" / "WindowsPowerShell" / "v1.0"),
+    ]
+    prefix = [entry for entry in required_entries if entry.lower() not in existing]
+
+    for key in list(updated):
+        if key.lower() == "path" and key != path_key:
+            del updated[key]
+    updated[path_key] = ";".join([*prefix, *current_entries])
+    return updated
 
 
 def launch_background_process(
