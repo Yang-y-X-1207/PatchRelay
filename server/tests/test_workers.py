@@ -52,7 +52,7 @@ async def test_claude_worker_uses_configured_command(tmp_path: Path) -> None:
     assert result.exit_code == 0
     assert "claude-out" in result.stdout
     assert (
-        "-p --output-format json --permission-mode acceptEdits --allowedTools Write,Edit,Read "
+        "-p --output-format json --dangerously-skip-permissions "
         "--disable-slash-commands --no-session-persistence hello"
     ) in result.stdout
 

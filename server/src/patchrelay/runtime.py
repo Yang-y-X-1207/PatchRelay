@@ -18,6 +18,7 @@ import psutil
 
 from patchrelay.config import Settings
 from patchrelay.git_workspace import resolve_state_dir
+from patchrelay.onboarding import apply_openclaw_config
 from patchrelay.workers import command_to_argv, terminate_process_tree
 
 
@@ -68,7 +69,12 @@ class RuntimeManager:
             services.append(skipped_service("patchrelay_server", "disabled by command option"))
 
         if self.options.start_openclaw:
-            services.append(self._start_openclaw_gateway(state))
+            preflight = self._openclaw_patchrelay_preflight()
+            services.append(preflight)
+            if preflight["ok"]:
+                services.append(self._start_openclaw_gateway(state))
+            else:
+                services.append(skipped_service("openclaw_gateway", "skipped because OpenClaw PatchRelay preflight failed"))
         else:
             services.append(skipped_service("openclaw_gateway", "disabled by command option"))
 
@@ -193,6 +199,61 @@ class RuntimeManager:
             "OpenClaw Gateway started." if reachable else f"OpenClaw Gateway did not become ready; see {log_path}."
         )
         return status
+
+    def _openclaw_patchrelay_preflight(self) -> dict[str, Any]:
+        current = openclaw_patchrelay_status()
+        if current["ok"]:
+            return {
+                "name": "openclaw_preflight",
+                "ok": True,
+                "status": "ready",
+                "message": "OpenClaw PatchRelay plugin and skill are already ready.",
+                "details": current,
+            }
+
+        if shutil.which("openclaw") is None:
+            return {
+                "name": "openclaw_preflight",
+                "ok": False,
+                "status": "unavailable",
+                "message": "openclaw command was not found on PATH.",
+                "details": current,
+            }
+
+        results = apply_openclaw_config(self.settings)
+        failed = next((result for result in results if not result.ok), None)
+        if failed is not None:
+            output = (failed.stderr or failed.stdout or "").strip()
+            return {
+                "name": "openclaw_preflight",
+                "ok": False,
+                "status": "failed",
+                "message": f"OpenClaw PatchRelay setup failed at step '{failed.step.name}'.",
+                "details": {
+                    "before": current,
+                    "step": failed.step.name,
+                    "exitCode": failed.exit_code,
+                    "output": output,
+                },
+            }
+
+        updated = openclaw_patchrelay_status()
+        if updated["ok"]:
+            return {
+                "name": "openclaw_preflight",
+                "ok": True,
+                "status": "applied",
+                "message": "OpenClaw PatchRelay plugin and skill were installed/enabled.",
+                "details": updated,
+            }
+
+        return {
+            "name": "openclaw_preflight",
+            "ok": False,
+            "status": "failed",
+            "message": "OpenClaw setup completed but PatchRelay plugin/skill is still not ready.",
+            "details": updated,
+        }
 
     def _stop_service(self, name: str, state: dict[str, Any]) -> dict[str, Any]:
         service = state.get(name)
@@ -343,6 +404,101 @@ def with_windows_system_path(env: dict[str, str]) -> dict[str, str]:
             del updated[key]
     updated[path_key] = ";".join([*prefix, *current_entries])
     return updated
+
+
+def openclaw_patchrelay_status() -> dict[str, Any]:
+    openclaw = shutil.which("openclaw")
+    if openclaw is None:
+        return {
+            "ok": False,
+            "pluginReady": False,
+            "skillReady": False,
+            "message": "openclaw command was not found on PATH.",
+        }
+
+    plugin = inspect_openclaw_patchrelay_plugin(openclaw)
+    skill = inspect_openclaw_patchrelay_skill(openclaw)
+    return {
+        "ok": bool(plugin["ok"] and skill["ok"]),
+        "pluginReady": bool(plugin["ok"]),
+        "skillReady": bool(skill["ok"]),
+        "plugin": plugin,
+        "skill": skill,
+        "message": "PatchRelay plugin and skill are ready."
+        if plugin["ok"] and skill["ok"]
+        else "PatchRelay plugin or skill is missing/not visible.",
+    }
+
+
+def inspect_openclaw_patchrelay_plugin(openclaw: str) -> dict[str, Any]:
+    result = run_openclaw_command([openclaw, "plugins", "inspect", "patchrelay", "--runtime", "--json"])
+    if result.returncode != 0:
+        return {
+            "ok": False,
+            "message": (result.stderr or result.stdout).strip(),
+        }
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        return {
+            "ok": False,
+            "message": f"Could not parse OpenClaw plugin inspect output: {exc}",
+        }
+    plugin = payload.get("plugin") if isinstance(payload, dict) else None
+    if not isinstance(plugin, dict):
+        return {
+            "ok": False,
+            "message": "OpenClaw plugin inspect output did not include a plugin object.",
+        }
+    tool_names = set(plugin.get("toolNames") if isinstance(plugin.get("toolNames"), list) else [])
+    required_tools = {"patchrelay_submit_task", "patchrelay_get_task", "patchrelay_cancel_task"}
+    ok = (
+        plugin.get("enabled") is True
+        and plugin.get("activated") is True
+        and plugin.get("status") == "loaded"
+        and required_tools.issubset(tool_names)
+    )
+    return {
+        "ok": ok,
+        "enabled": plugin.get("enabled") is True,
+        "activated": plugin.get("activated") is True,
+        "status": plugin.get("status") or "",
+        "tools": sorted(tool_names),
+        "message": "PatchRelay plugin is loaded."
+        if ok
+        else "PatchRelay plugin is not loaded/enabled or required tools are missing.",
+    }
+
+
+def inspect_openclaw_patchrelay_skill(openclaw: str) -> dict[str, Any]:
+    result = run_openclaw_command([openclaw, "skills", "info", "patchrelay"])
+    output = f"{result.stdout}\n{result.stderr}"
+    ok = result.returncode == 0 and "Visible to model: yes" in output and "Ready" in output
+    return {
+        "ok": ok,
+        "visible": "Visible to model: yes" in output,
+        "ready": "Ready" in output,
+        "message": "PatchRelay skill is visible to the model." if ok else output.strip(),
+    }
+
+
+def run_openclaw_command(command: list[str]) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=with_windows_system_path(os.environ.copy()),
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+            timeout=60,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return subprocess.CompletedProcess(command, 124, exc.stdout or "", str(exc))
+    except OSError as exc:
+        return subprocess.CompletedProcess(command, 127, "", str(exc))
 
 
 def launch_background_process(

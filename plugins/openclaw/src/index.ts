@@ -49,7 +49,8 @@ export default defineToolPlugin({
   tools: (tool) => [
     tool({
       name: "patchrelay_submit_task",
-      description: "Submit a coding task to PatchRelay.",
+      description:
+        "Delegate a coding task to a local PatchRelay worker (isolated Git worktree + tests). Returns a taskId to poll with patchrelay_get_task. Use for features, refactors, bug fixes, test writing — not read-only lookup.",
       parameters: Type.Object({
         instruction: Type.String({
           description: "Coding instruction to pass to the configured worker.",
@@ -81,7 +82,8 @@ export default defineToolPlugin({
     }),
     tool({
       name: "patchrelay_get_task",
-      description: "Fetch PatchRelay task status, logs, events, diff, and test artifacts.",
+      description:
+        "Poll a PatchRelay task by taskId: status, phase, branch, worktree, diff, worker logs, test output, artifacts. Call repeatedly until status is completed/failed/canceled.",
       parameters: Type.Object({
         taskId: Type.String({
           description: "PatchRelay task id.",

@@ -4,6 +4,7 @@ from pathlib import Path
 import psutil
 
 from patchrelay.config import RepoConfig, Settings, WorkerConfig
+from patchrelay.onboarding import OpenClawApplyResult, OpenClawApplyStep
 from patchrelay.runtime import (
     RuntimeManager,
     RuntimeOptions,
@@ -123,6 +124,10 @@ def test_runtime_start_openclaw_uses_explicit_command_and_windows_path(
     monkeypatch.setattr("patchrelay.runtime.tcp_reachable", lambda host, port: next(reachable))
     monkeypatch.setattr("patchrelay.runtime.psutil.pid_exists", lambda pid: True)
     monkeypatch.setattr(
+        "patchrelay.runtime.openclaw_patchrelay_status",
+        lambda: {"ok": True, "pluginReady": True, "skillReady": True},
+    )
+    monkeypatch.setattr(
         "patchrelay.runtime.with_windows_system_path",
         lambda env: {**env, "Path": r"C:\Windows\System32;D:\NodeJS"},
     )
@@ -146,6 +151,60 @@ def test_runtime_start_openclaw_uses_explicit_command_and_windows_path(
     ]
     assert launched["env"]["Path"].startswith(r"C:\Windows\System32")
     assert launched["env"]["OPENCLAW_SKIP_STARTUP_MODEL_PREWARM"] == "1"
+
+
+def test_openclaw_preflight_skips_apply_when_ready(tmp_path: Path, monkeypatch) -> None:
+    repo = init_git_repo(tmp_path / "repo")
+    settings = Settings(repo=RepoConfig(path=repo, base_branch="main", state_dir=Path(".patchrelay-test")))
+    options = RuntimeOptions(
+        config_path="local.yaml",
+        gateway_url="http://127.0.0.1:19001",
+        gateway_token="token",
+        timeout_seconds=0,
+    )
+
+    monkeypatch.setattr("patchrelay.runtime.openclaw_patchrelay_status", lambda: {"ok": True})
+    monkeypatch.setattr(
+        "patchrelay.runtime.apply_openclaw_config",
+        lambda settings: (_ for _ in ()).throw(AssertionError("apply should not run")),
+    )
+
+    result = RuntimeManager(settings, options)._openclaw_patchrelay_preflight()
+
+    assert result["ok"] is True
+    assert result["status"] == "ready"
+
+
+def test_openclaw_preflight_applies_when_missing(tmp_path: Path, monkeypatch) -> None:
+    repo = init_git_repo(tmp_path / "repo")
+    settings = Settings(repo=RepoConfig(path=repo, base_branch="main", state_dir=Path(".patchrelay-test")))
+    options = RuntimeOptions(
+        config_path="local.yaml",
+        gateway_url="http://127.0.0.1:19001",
+        gateway_token="token",
+        timeout_seconds=0,
+    )
+    statuses = iter(
+        [
+            {"ok": False, "pluginReady": False, "skillReady": False},
+            {"ok": True, "pluginReady": True, "skillReady": True},
+        ]
+    )
+    applied = []
+
+    def fake_apply(settings: Settings):
+        applied.append(settings)
+        return [OpenClawApplyResult(OpenClawApplyStep(name="enable skill", command=["openclaw"]), 0, "", "")]
+
+    monkeypatch.setattr("patchrelay.runtime.openclaw_patchrelay_status", lambda: next(statuses))
+    monkeypatch.setattr("patchrelay.runtime.shutil.which", lambda executable: "openclaw")
+    monkeypatch.setattr("patchrelay.runtime.apply_openclaw_config", fake_apply)
+
+    result = RuntimeManager(settings, options)._openclaw_patchrelay_preflight()
+
+    assert result["ok"] is True
+    assert result["status"] == "applied"
+    assert applied == [settings]
 
 
 def test_with_windows_system_path_adds_system_directories(monkeypatch) -> None:
@@ -176,6 +235,10 @@ def test_start_script_uses_current_dir_explicit_gateway_and_windows_path() -> No
     assert r"C:\Users\57826\IdeaProjects\PatchRelay\PatchRelay-tui\server" not in text
     assert "Add-WindowsPathEntry (Join-Path $WindowsRoot \"System32\")" in text
     assert "Start-Process $PowerShellExe" in text
+    assert "Test-OpenClawPatchRelayReady" in text
+    assert "openclaw plugins inspect patchrelay --runtime --json" in text
+    assert "openclaw skills info patchrelay" in text
+    assert "uv run patchrelay openclaw apply --config .\\patchrelay.yaml --apply" in text
     assert "OPENCLAW_SKIP_STARTUP_MODEL_PREWARM" in text
     assert (
         "openclaw gateway run --port 19001 --auth token --token openclaw-local-token --bind loopback --force"

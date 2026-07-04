@@ -1,3 +1,5 @@
+import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -216,8 +218,21 @@ def test_generate_openclaw_commands_uses_config_values(tmp_path: Path) -> None:
 
     assert "npm run plugin:validate" in joined
     assert "openclaw plugins install" in joined
+    assert "openclaw skills install" in joined
+    assert "skills:" in joined
     assert "http://127.0.0.1:8787" in joined
     assert "secret-token" in joined
+
+
+def test_patchrelay_openclaw_skill_declares_delegate_boundaries() -> None:
+    skill_path = Path(__file__).resolve().parents[2] / "plugins" / "openclaw" / "skills" / "patchrelay" / "SKILL.md"
+
+    skill = skill_path.read_text(encoding="utf-8")
+
+    assert "patchrelay_submit_task" in skill
+    assert "not for read-only lookup or trivial one-line edits" in skill
+    assert "skills.entries.patchrelay.enabled" in skill
+    assert "plugins.entries.patchrelay.enabled" in skill
 
 
 def test_build_openclaw_apply_steps_uses_structured_commands(tmp_path: Path) -> None:
@@ -226,12 +241,60 @@ def test_build_openclaw_apply_steps_uses_structured_commands(tmp_path: Path) -> 
 
     steps = build_openclaw_apply_steps(settings, plugin_root=plugin_root)
 
-    assert [step.name for step in steps] == ["validate plugin", "install plugin", "configure plugin"]
+    assert [step.name for step in steps] == [
+        "validate plugin",
+        "install plugin",
+        "configure plugin",
+        "install skill",
+        "enable skill",
+    ]
     assert steps[0].cwd == plugin_root
     assert "plugin:validate" in steps[0].command
     assert steps[1].command[:3] == ["openclaw", "plugins", "install"]
     assert steps[2].stdin is not None
     assert "secret-token" in steps[2].stdin
+    assert steps[3].command[:3] == ["openclaw", "skills", "install"]
+    assert str(plugin_root / "skills" / "patchrelay") in steps[3].command
+    assert "--global" in steps[3].command
+    assert steps[4].stdin is not None
+    assert "skills" in steps[4].stdin
+    assert "patchrelay: { enabled: true }" in steps[4].stdin
+
+
+def test_apply_openclaw_config_falls_back_after_size_drop_rejection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "openclaw.json"
+    config_path.write_text(
+        json.dumps({"plugins": {"entries": {"existing": {"enabled": True}}}}),
+        encoding="utf-8",
+    )
+    settings = Settings(server=ServerConfig(host="127.0.0.1", port=8787, token="secret-token"))
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        if command == ["openclaw", "config", "patch", "--stdin"]:
+            return subprocess.CompletedProcess(
+                command,
+                1,
+                "",
+                "Config write rejected: openclaw.json (size-drop:100->50).",
+            )
+        if command == ["openclaw", "config", "file"]:
+            return subprocess.CompletedProcess(command, 0, str(config_path), "")
+        if command == ["openclaw", "config", "validate"]:
+            return subprocess.CompletedProcess(command, 0, "Config valid\n", "")
+        return subprocess.CompletedProcess(command, 0, "ok\n", "")
+
+    monkeypatch.setattr("patchrelay.onboarding.subprocess.run", fake_run)
+
+    results = apply_openclaw_config(settings, plugin_root=tmp_path / "plugins" / "openclaw")
+
+    assert [result.ok for result in results] == [True, True, True, True, True]
+    updated = json.loads(config_path.read_text(encoding="utf-8"))
+    assert updated["plugins"]["entries"]["existing"]["enabled"] is True
+    assert updated["plugins"]["entries"]["patchrelay"]["config"]["token"] == "secret-token"
+    assert updated["skills"]["entries"]["patchrelay"]["enabled"] is True
 
 
 def test_apply_openclaw_config_stops_on_failed_step(
