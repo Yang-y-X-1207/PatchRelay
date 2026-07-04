@@ -4,6 +4,8 @@ from typing import Any
 
 from textual.widgets import DataTable
 
+from patchrelay.tui.task_status import display_task_status
+
 
 class TaskTable(DataTable):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -60,7 +62,7 @@ class TaskTable(DataTable):
         tests = artifacts.get("patchrelay.tests") if isinstance(artifacts.get("patchrelay.tests"), dict) else {}
         tests_content = tests.get("content") if isinstance(tests.get("content"), dict) else {}
         return {
-            "status": str(task.get("status") or "-"),
+            "status": display_task_status(task),
             "phase": str(task.get("phase") or "-"),
             "worker": str(task.get("worker") or "-"),
             "test": str(summary_content.get("testStatus") or tests_content.get("status") or "-"),

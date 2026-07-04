@@ -18,7 +18,7 @@ import psutil
 
 from patchrelay.config import Settings
 from patchrelay.git_workspace import resolve_state_dir
-from patchrelay.onboarding import apply_openclaw_config
+from patchrelay.onboarding import PATCHRELAY_OPENCLAW_TOOL_NAMES, apply_openclaw_config
 from patchrelay.workers import command_to_argv, terminate_process_tree
 
 
@@ -207,7 +207,7 @@ class RuntimeManager:
                 "name": "openclaw_preflight",
                 "ok": True,
                 "status": "ready",
-                "message": "OpenClaw PatchRelay plugin and skill are already ready.",
+                "message": "OpenClaw PatchRelay plugin, skill, and tool policy are already ready.",
                 "details": current,
             }
 
@@ -243,7 +243,7 @@ class RuntimeManager:
                 "name": "openclaw_preflight",
                 "ok": True,
                 "status": "applied",
-                "message": "OpenClaw PatchRelay plugin and skill were installed/enabled.",
+                "message": "OpenClaw PatchRelay plugin, skill, and tool policy were configured.",
                 "details": updated,
             }
 
@@ -251,7 +251,7 @@ class RuntimeManager:
             "name": "openclaw_preflight",
             "ok": False,
             "status": "failed",
-            "message": "OpenClaw setup completed but PatchRelay plugin/skill is still not ready.",
+            "message": "OpenClaw setup completed but PatchRelay plugin/skill/tools are still not ready.",
             "details": updated,
         }
 
@@ -418,15 +418,19 @@ def openclaw_patchrelay_status() -> dict[str, Any]:
 
     plugin = inspect_openclaw_patchrelay_plugin(openclaw)
     skill = inspect_openclaw_patchrelay_skill(openclaw)
+    tool_policy = inspect_openclaw_patchrelay_tool_policy(openclaw)
+    ready = bool(plugin["ok"] and skill["ok"] and tool_policy["ok"])
     return {
-        "ok": bool(plugin["ok"] and skill["ok"]),
+        "ok": ready,
         "pluginReady": bool(plugin["ok"]),
         "skillReady": bool(skill["ok"]),
+        "toolPolicyReady": bool(tool_policy["ok"]),
         "plugin": plugin,
         "skill": skill,
-        "message": "PatchRelay plugin and skill are ready."
-        if plugin["ok"] and skill["ok"]
-        else "PatchRelay plugin or skill is missing/not visible.",
+        "toolPolicy": tool_policy,
+        "message": "PatchRelay plugin, skill, and tool policy are ready."
+        if ready
+        else "PatchRelay plugin, skill, or tool policy is missing/not visible.",
     }
 
 
@@ -480,6 +484,82 @@ def inspect_openclaw_patchrelay_skill(openclaw: str) -> dict[str, Any]:
         "ready": "Ready" in output,
         "message": "PatchRelay skill is visible to the model." if ok else output.strip(),
     }
+
+
+def inspect_openclaw_patchrelay_tool_policy(openclaw: str) -> dict[str, Any]:
+    result = run_openclaw_command([openclaw, "config", "get", "tools"])
+    if result.returncode != 0:
+        return {
+            "ok": False,
+            "message": (result.stderr or result.stdout).strip(),
+        }
+    try:
+        tools_config = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        return {
+            "ok": False,
+            "message": f"Could not parse OpenClaw tools config: {exc}",
+        }
+    return patchrelay_tools_allowed(tools_config)
+
+
+def patchrelay_tools_allowed(tools_config: Any) -> dict[str, Any]:
+    if not isinstance(tools_config, dict):
+        return {
+            "ok": False,
+            "profile": "",
+            "allow": [],
+            "alsoAllow": [],
+            "deny": [],
+            "message": "OpenClaw tools config is not an object.",
+        }
+
+    profile = tools_config.get("profile")
+    allow = string_list(tools_config.get("allow"))
+    also_allow = string_list(tools_config.get("alsoAllow"))
+    deny = string_list(tools_config.get("deny"))
+
+    denied = any(
+        entry in deny
+        for entry in [
+            "*",
+            "group:plugins",
+            "patchrelay",
+            *PATCHRELAY_OPENCLAW_TOOL_NAMES,
+        ]
+    )
+    allowed = (
+        profile in {"full", "full-permission", "full-permisson"}
+        or tool_policy_entries_allow_patchrelay(allow)
+        or tool_policy_entries_allow_patchrelay(also_allow)
+    )
+    ok = bool(allowed and not denied)
+    return {
+        "ok": ok,
+        "profile": profile if isinstance(profile, str) else "",
+        "allow": allow,
+        "alsoAllow": also_allow,
+        "deny": deny,
+        "message": "PatchRelay tools are allowed by OpenClaw tool policy."
+        if ok
+        else "PatchRelay tools are not allowed by OpenClaw tool policy.",
+    }
+
+
+def tool_policy_entries_allow_patchrelay(entries: list[str]) -> bool:
+    return (
+        "group:plugins" in entries
+        or "patchrelay" in entries
+        or all(tool_name in entries for tool_name in PATCHRELAY_OPENCLAW_TOOL_NAMES)
+    )
+
+
+def string_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, str)]
+    if isinstance(value, str):
+        return [value]
+    return []
 
 
 def run_openclaw_command(command: list[str]) -> subprocess.CompletedProcess[str]:

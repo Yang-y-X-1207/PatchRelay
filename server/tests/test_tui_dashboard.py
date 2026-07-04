@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from patchrelay.tui.app import create_tui_app
 from patchrelay.tui.screens.dashboard import _task_action_state, _task_worktree_path
+from patchrelay.tui.task_status import display_task_status
 from patchrelay.tui.widgets.task_artifacts import ARTIFACT_VIEWS, TaskArtifactsPane
 
 
@@ -20,6 +21,13 @@ def test_task_action_state_tracks_cancellable_tasks() -> None:
 def test_task_worktree_path_returns_none_without_value() -> None:
     assert _task_worktree_path(None) is None
     assert _task_worktree_path({"taskId": "task-1"}) is None
+
+
+def test_display_task_status_distinguishes_post_worker_phases() -> None:
+    assert display_task_status({"status": "working", "phase": "worker"}) == "working"
+    assert display_task_status({"status": "working", "phase": "tests"}) == "testing"
+    assert display_task_status({"status": "working", "phase": "artifacts"}) == "finalizing"
+    assert display_task_status({"status": "completed", "phase": "completed"}) == "completed"
 
 
 def test_task_artifacts_set_view_normalizes_invalid_view() -> None:

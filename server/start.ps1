@@ -23,6 +23,7 @@ function Add-WindowsPathEntry {
 function Test-OpenClawPatchRelayReady {
     $pluginReady = $false
     $skillReady = $false
+    $toolsReady = $false
 
     try {
         $pluginJson = (& openclaw plugins inspect patchrelay --runtime --json 2>$null) -join "`n"
@@ -53,7 +54,47 @@ function Test-OpenClawPatchRelayReady {
         $skillReady = $false
     }
 
-    return ($pluginReady -and $skillReady)
+    try {
+        $toolsJson = (& openclaw config get tools 2>$null) -join "`n"
+        if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($toolsJson)) {
+            $tools = $toolsJson | ConvertFrom-Json
+            $allow = @($tools.allow)
+            $alsoAllow = @($tools.alsoAllow)
+            $deny = @($tools.deny)
+            $patchrelayToolsAllowed = (
+                $tools.profile -eq "full" -or
+                $tools.profile -eq "full-permission" -or
+                $tools.profile -eq "full-permisson" -or
+                $allow -contains "group:plugins" -or
+                $allow -contains "patchrelay" -or
+                $alsoAllow -contains "group:plugins" -or
+                $alsoAllow -contains "patchrelay" -or
+                (
+                    $allow -contains "patchrelay_submit_task" -and
+                    $allow -contains "patchrelay_get_task" -and
+                    $allow -contains "patchrelay_cancel_task"
+                ) -or
+                (
+                    $alsoAllow -contains "patchrelay_submit_task" -and
+                    $alsoAllow -contains "patchrelay_get_task" -and
+                    $alsoAllow -contains "patchrelay_cancel_task"
+                )
+            )
+            $patchrelayToolsDenied = (
+                $deny -contains "*" -or
+                $deny -contains "group:plugins" -or
+                $deny -contains "patchrelay" -or
+                $deny -contains "patchrelay_submit_task" -or
+                $deny -contains "patchrelay_get_task" -or
+                $deny -contains "patchrelay_cancel_task"
+            )
+            $toolsReady = ($patchrelayToolsAllowed -and -not $patchrelayToolsDenied)
+        }
+    } catch {
+        $toolsReady = $false
+    }
+
+    return ($pluginReady -and $skillReady -and $toolsReady)
 }
 
 $WindowsRoot = $env:SystemRoot
@@ -95,10 +136,31 @@ if (Test-Path ".\patchrelay.yaml") {
 Write-Host "Token: $token" -ForegroundColor Green
 Write-Host ""
 
+# Read the OpenClaw gateway endpoint from its own config so the gateway we
+# (re)start below is the exact one `openclaw dashboard`, `openclaw status`, and
+# the CLI connect to. If start.ps1 launched a gateway on a different port/token
+# than the config declares, the Dashboard would talk to a separate (often stale)
+# gateway that never reloaded the freshly-applied PatchRelay tool/skill config,
+# so Agent1 would not see patchrelay_* tools even though config is correct.
+$openclawConfigPath = Join-Path $env:USERPROFILE ".openclaw\openclaw.json"
+$gatewayPort = 19001
+$gatewayToken = "openclaw-local-token"
+if (Test-Path $openclawConfigPath) {
+    try {
+        $openclawConfig = Get-Content $openclawConfigPath -Raw | ConvertFrom-Json
+        if ($openclawConfig.gateway.port) { $gatewayPort = [int]$openclawConfig.gateway.port }
+        if ($openclawConfig.gateway.auth.token) { $gatewayToken = [string]$openclawConfig.gateway.auth.token }
+    } catch {
+        Write-Host "Could not parse $openclawConfigPath; using gateway defaults ${gatewayPort}." -ForegroundColor Yellow
+    }
+}
+Write-Host "Gateway endpoint: http://127.0.0.1:$gatewayPort (from OpenClaw config)" -ForegroundColor Green
+Write-Host ""
+
 # 1. Ensure OpenClaw can see PatchRelay tools and skill
 Write-Host "[1/5] Checking OpenClaw PatchRelay integration..." -ForegroundColor Yellow
 if (Test-OpenClawPatchRelayReady) {
-    Write-Host "OpenClaw PatchRelay plugin and skill are already ready." -ForegroundColor Green
+    Write-Host "OpenClaw PatchRelay plugin, skill, and tools are already ready." -ForegroundColor Green
 } else {
     Write-Host "PatchRelay OpenClaw integration is missing; applying setup..." -ForegroundColor Yellow
     uv run patchrelay openclaw apply --config .\patchrelay.yaml --apply
@@ -110,8 +172,12 @@ if (Test-OpenClawPatchRelayReady) {
 Write-Host ""
 
 # 2. Launch OpenClaw Gateway
+# A schtasks "Gateway service" may already own the config port. Prefer restarting
+# that service (reloads config + plugins, no port conflict); fall back to a
+# foreground gateway only when no service is installed. A plain `gateway run
+# --force` here would fight the service for the port and fail to bind.
 Write-Host "[2/5] Launching OpenClaw Gateway..." -ForegroundColor Yellow
-$gatewayCmd = "Set-Location '$ServerDir'; `$env:OPENCLAW_SKIP_STARTUP_MODEL_PREWARM = '1'; Write-Host '================================================' -ForegroundColor Cyan; Write-Host '  OpenClaw Gateway' -ForegroundColor White; Write-Host '  Port: 19001' -ForegroundColor Yellow; Write-Host '================================================' -ForegroundColor Cyan; Write-Host ''; openclaw gateway run --port 19001 --auth token --token openclaw-local-token --bind loopback --force"
+$gatewayCmd = "Set-Location '$ServerDir'; `$env:OPENCLAW_SKIP_STARTUP_MODEL_PREWARM = '1'; Write-Host '================================================' -ForegroundColor Cyan; Write-Host '  OpenClaw Gateway' -ForegroundColor White; Write-Host '  Port: $gatewayPort' -ForegroundColor Yellow; Write-Host '================================================' -ForegroundColor Cyan; Write-Host ''; openclaw gateway restart; if (`$LASTEXITCODE -ne 0) { Write-Host 'No gateway service; starting foreground gateway...' -ForegroundColor Yellow; openclaw gateway run --port $gatewayPort --auth token --token $gatewayToken --bind loopback --force }"
 Start-Process $PowerShellExe -ArgumentList "-NoExit", "-Command", $gatewayCmd
 Start-Sleep -Seconds 4
 
@@ -123,7 +189,7 @@ Start-Sleep -Seconds 4
 
 # 4. Launch PatchRelay TUI
 Write-Host "[4/5] Launching PatchRelay TUI..." -ForegroundColor Yellow
-$tuiCmd = "Set-Location '$ServerDir'; Write-Host '================================================' -ForegroundColor Cyan; Write-Host '  PatchRelay TUI Monitor' -ForegroundColor White; Write-Host '================================================' -ForegroundColor Cyan; Write-Host ''; Write-Host 'Waiting for services...' -ForegroundColor Gray; Start-Sleep 12; uv run patchrelay ui --config .\patchrelay.yaml --url http://127.0.0.1:8787 --token $token --gateway-url http://127.0.0.1:19001 --gateway-token openclaw-local-token --gateway-bind loopback"
+$tuiCmd = "Set-Location '$ServerDir'; Write-Host '================================================' -ForegroundColor Cyan; Write-Host '  PatchRelay TUI Monitor' -ForegroundColor White; Write-Host '================================================' -ForegroundColor Cyan; Write-Host ''; Write-Host 'Waiting for services...' -ForegroundColor Gray; Start-Sleep 12; uv run patchrelay ui --config .\patchrelay.yaml --url http://127.0.0.1:8787 --token $token --gateway-url http://127.0.0.1:$gatewayPort --gateway-token $gatewayToken --gateway-bind loopback"
 Start-Process $PowerShellExe -ArgumentList "-NoExit", "-Command", $tuiCmd
 Start-Sleep -Seconds 3
 
@@ -138,7 +204,7 @@ Write-Host "  Startup Complete!" -ForegroundColor Green
 Write-Host "================================================" -ForegroundColor Green
 Write-Host ""
 Write-Host "Running Services (3 windows + browser):" -ForegroundColor White
-Write-Host "  Window 1: OpenClaw Gateway (Port 19001)" -ForegroundColor Cyan
+Write-Host "  Window 1: OpenClaw Gateway (Port $gatewayPort)" -ForegroundColor Cyan
 Write-Host "  Window 2: PatchRelay Server (Port 8787)" -ForegroundColor Cyan
 Write-Host "  Window 3: PatchRelay TUI Monitor" -ForegroundColor Cyan
 Write-Host "  Browser:  OpenClaw Dashboard" -ForegroundColor Cyan

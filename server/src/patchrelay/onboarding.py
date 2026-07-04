@@ -16,6 +16,12 @@ from patchrelay.config import Settings
 
 WorkerChoice = Literal["fake", "claude", "codex"]
 
+PATCHRELAY_OPENCLAW_TOOL_NAMES = [
+    "patchrelay_submit_task",
+    "patchrelay_get_task",
+    "patchrelay_cancel_task",
+]
+
 
 class OnboardingError(RuntimeError):
     pass
@@ -97,6 +103,8 @@ class OpenClawApplyStep:
     cwd: Path | None = None
     stdin: str | None = None
     config_patch: dict[str, Any] | None = None
+    direct_config_patch: bool = False
+    success_output_markers: tuple[str, ...] = ()
 
     def display_command(self) -> str:
         rendered = " ".join(quote_shell_arg(part) for part in self.command)
@@ -641,6 +649,7 @@ def generate_openclaw_commands(settings: Settings, plugin_root: Path | None = No
         openclaw_config_patch_command(base_url, token),
         f"openclaw skills install {quote_powershell_path(skill_root)} --global",
         openclaw_skill_config_patch_command(),
+        openclaw_tool_policy_config_patch_command(),
         "openclaw skills info patchrelay",
         "openclaw skills check",
         "openclaw plugins inspect patchrelay --runtime --json",
@@ -653,6 +662,7 @@ def build_openclaw_apply_steps(settings: Settings, plugin_root: Path | None = No
     skill_root = default_openclaw_skill_root(root)
     base_url = f"http://{settings.server.host}:{settings.server.port}"
     token = settings.server.token
+    openclaw = openclaw_executable()
     return [
         OpenClawApplyStep(
             name="validate plugin",
@@ -661,23 +671,33 @@ def build_openclaw_apply_steps(settings: Settings, plugin_root: Path | None = No
         ),
         OpenClawApplyStep(
             name="install plugin",
-            command=["openclaw", "plugins", "install", str(root), "--link"],
+            command=[openclaw, "plugins", "install", str(root), "--link"],
+            config_patch=openclaw_plugin_link_config_patch(root),
+            direct_config_patch=True,
         ),
         OpenClawApplyStep(
             name="configure plugin",
-            command=["openclaw", "config", "patch", "--stdin"],
+            command=[openclaw, "config", "patch", "--stdin"],
             stdin=openclaw_config_json(base_url, token),
             config_patch=openclaw_config_patch(base_url, token),
         ),
         OpenClawApplyStep(
             name="install skill",
-            command=["openclaw", "skills", "install", str(skill_root), "--global"],
+            command=[openclaw, "skills", "install", str(skill_root), "--global"],
+            success_output_markers=("Skill already exists",),
         ),
         OpenClawApplyStep(
             name="enable skill",
-            command=["openclaw", "config", "patch", "--stdin"],
+            command=[openclaw, "config", "patch", "--stdin"],
             stdin=openclaw_skill_config_json(),
             config_patch=openclaw_skill_config_patch(),
+        ),
+        OpenClawApplyStep(
+            name="allow plugin tools",
+            command=[openclaw, "config", "patch", "--stdin"],
+            stdin=openclaw_tool_policy_config_json(),
+            config_patch=openclaw_tool_policy_config_patch(),
+            direct_config_patch=True,
         ),
     ]
 
@@ -685,6 +705,12 @@ def build_openclaw_apply_steps(settings: Settings, plugin_root: Path | None = No
 def apply_openclaw_config(settings: Settings, plugin_root: Path | None = None) -> list[OpenClawApplyResult]:
     results: list[OpenClawApplyResult] = []
     for step in build_openclaw_apply_steps(settings, plugin_root):
+        if step.direct_config_patch and step.config_patch is not None:
+            apply_result = apply_openclaw_config_patch_directly(step, step.config_patch)
+            results.append(apply_result)
+            if not apply_result.ok:
+                break
+            continue
         try:
             result = subprocess.run(
                 step.command,
@@ -705,6 +731,15 @@ def apply_openclaw_config(settings: Settings, plugin_root: Path | None = None) -
             stdout=result.stdout,
             stderr=result.stderr,
         )
+        if not apply_result.ok and step.success_output_markers:
+            output = f"{apply_result.stdout}\n{apply_result.stderr}"
+            if any(marker in output for marker in step.success_output_markers):
+                apply_result = OpenClawApplyResult(
+                    step=step,
+                    exit_code=0,
+                    stdout=apply_result.stdout,
+                    stderr=apply_result.stderr,
+                )
         if not apply_result.ok and step.config_patch is not None and openclaw_write_guard_rejected(apply_result):
             apply_result = apply_openclaw_config_patch_directly(step, step.config_patch)
         results.append(apply_result)
@@ -724,14 +759,15 @@ def apply_openclaw_config_patch_directly(
 ) -> OpenClawApplyResult:
     try:
         config_path = openclaw_config_file_path()
-        original_text = config_path.read_text(encoding="utf-8")
+        original_bytes = config_path.read_bytes()
+        original_text = original_bytes.decode("utf-8-sig")
         current = json.loads(original_text) if original_text.strip() else {}
         if not isinstance(current, dict):
             raise OnboardingError(f"{config_path} must contain a JSON object")
         merge_config_patch(current, patch)
         config_path.write_text(json.dumps(current, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         validation = subprocess.run(
-            ["openclaw", "config", "validate"],
+            [openclaw_executable(), "config", "validate"],
             check=False,
             capture_output=True,
             text=True,
@@ -739,7 +775,7 @@ def apply_openclaw_config_patch_directly(
             errors="replace",
         )
         if validation.returncode != 0:
-            config_path.write_text(original_text, encoding="utf-8")
+            config_path.write_bytes(original_bytes)
             return OpenClawApplyResult(
                 step=step,
                 exit_code=validation.returncode,
@@ -749,7 +785,7 @@ def apply_openclaw_config_patch_directly(
         return OpenClawApplyResult(
             step=step,
             exit_code=0,
-            stdout="Applied OpenClaw config patch directly after CLI write guard rejection.\n" + validation.stdout,
+            stdout="Applied OpenClaw config patch directly.\n" + validation.stdout,
             stderr="",
         )
     except Exception as exc:
@@ -758,7 +794,7 @@ def apply_openclaw_config_patch_directly(
 
 def openclaw_config_file_path() -> Path:
     result = subprocess.run(
-        ["openclaw", "config", "file"],
+        [openclaw_executable(), "config", "file"],
         check=False,
         capture_output=True,
         text=True,
@@ -770,16 +806,33 @@ def openclaw_config_file_path() -> Path:
     return Path.home() / ".openclaw" / "openclaw.json"
 
 
-def merge_config_patch(target: dict[str, Any], patch: dict[str, Any]) -> None:
+def merge_config_patch(target: dict[str, Any], patch: dict[str, Any], path: tuple[str, ...] = ()) -> None:
     for key, value in patch.items():
+        next_path = (*path, key)
         if value is None:
             target.pop(key, None)
             continue
         existing = target.get(key)
-        if isinstance(existing, dict) and isinstance(value, dict):
-            merge_config_patch(existing, value)
+        if (
+            next_path in {("plugins", "load", "paths"), ("tools", "alsoAllow")}
+            and isinstance(existing, list)
+            and isinstance(value, list)
+        ):
+            target[key] = merge_unique_strings(existing, value)
+        elif isinstance(existing, dict) and isinstance(value, dict):
+            merge_config_patch(existing, value, next_path)
         else:
             target[key] = value
+
+
+def merge_unique_strings(existing: list[Any], additions: list[Any]) -> list[Any]:
+    merged = list(existing)
+    seen = {item for item in merged if isinstance(item, str)}
+    for item in additions:
+        if isinstance(item, str) and item not in seen:
+            merged.append(item)
+            seen.add(item)
+    return merged
 
 
 def default_openclaw_plugin_root() -> Path:
@@ -802,6 +855,15 @@ def quote_shell_arg(value: str) -> str:
 
 def is_windows() -> bool:
     return shutil.which("cmd.exe") is not None
+
+
+def openclaw_executable() -> str:
+    if is_windows():
+        for executable in ("openclaw.cmd", "openclaw.exe", "openclaw.bat"):
+            resolved = shutil.which(executable)
+            if resolved is not None:
+                return resolved
+    return shutil.which("openclaw") or "openclaw"
 
 
 def openclaw_config_patch_command(base_url: str, token: str) -> str:
@@ -840,8 +902,27 @@ def openclaw_config_patch(base_url: str, token: str) -> dict[str, Any]:
     }
 
 
+def openclaw_plugin_link_config_patch(plugin_root: Path) -> dict[str, Any]:
+    return {
+        "plugins": {
+            "load": {
+                "paths": [str(plugin_root)],
+            },
+            "entries": {
+                "patchrelay": {
+                    "enabled": True,
+                }
+            },
+        }
+    }
+
+
 def openclaw_skill_config_patch_command() -> str:
     return "@'\n" + openclaw_skill_config_json() + "'@ | openclaw config patch --stdin"
+
+
+def openclaw_tool_policy_config_patch_command() -> str:
+    return "@'\n" + openclaw_tool_policy_config_json() + "'@ | openclaw config patch --stdin"
 
 
 def openclaw_config_json(base_url: str, token: str) -> str:
@@ -882,6 +963,25 @@ def openclaw_skill_config_patch() -> dict[str, Any]:
                     "enabled": True,
                 }
             }
+        }
+    }
+
+
+def openclaw_tool_policy_config_json() -> str:
+    rendered_tools = ", ".join(f'"{tool_name}"' for tool_name in PATCHRELAY_OPENCLAW_TOOL_NAMES)
+    return (
+        "{\n"
+        "  tools: {\n"
+        f"    alsoAllow: [{rendered_tools}]\n"
+        "  }\n"
+        "}\n"
+    )
+
+
+def openclaw_tool_policy_config_patch() -> dict[str, Any]:
+    return {
+        "tools": {
+            "alsoAllow": PATCHRELAY_OPENCLAW_TOOL_NAMES,
         }
     }
 

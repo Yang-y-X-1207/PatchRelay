@@ -10,6 +10,7 @@ from patchrelay.runtime import (
     RuntimeOptions,
     managed_process_matches,
     parse_gateway_url,
+    patchrelay_tools_allowed,
     runtime_payload,
     with_windows_system_path,
     worker_readiness,
@@ -207,6 +208,29 @@ def test_openclaw_preflight_applies_when_missing(tmp_path: Path, monkeypatch) ->
     assert applied == [settings]
 
 
+def test_patchrelay_tools_allowed_requires_plugin_tool_policy() -> None:
+    missing = patchrelay_tools_allowed({"profile": "coding"})
+    exact = patchrelay_tools_allowed(
+        {
+            "profile": "coding",
+            "alsoAllow": [
+                "patchrelay_submit_task",
+                "patchrelay_get_task",
+                "patchrelay_cancel_task",
+            ],
+        }
+    )
+    plugin_group = patchrelay_tools_allowed({"profile": "coding", "alsoAllow": ["patchrelay"]})
+    full = patchrelay_tools_allowed({"profile": "full"})
+    denied = patchrelay_tools_allowed({"profile": "full", "deny": ["patchrelay_submit_task"]})
+
+    assert missing["ok"] is False
+    assert exact["ok"] is True
+    assert plugin_group["ok"] is True
+    assert full["ok"] is True
+    assert denied["ok"] is False
+
+
 def test_with_windows_system_path_adds_system_directories(monkeypatch) -> None:
     monkeypatch.setattr("patchrelay.runtime.os.name", "nt")
 
@@ -238,12 +262,27 @@ def test_start_script_uses_current_dir_explicit_gateway_and_windows_path() -> No
     assert "Test-OpenClawPatchRelayReady" in text
     assert "openclaw plugins inspect patchrelay --runtime --json" in text
     assert "openclaw skills info patchrelay" in text
+    assert "openclaw config get tools" in text
+    assert "patchrelay_submit_task" in text
     assert "uv run patchrelay openclaw apply --config .\\patchrelay.yaml --apply" in text
     assert "OPENCLAW_SKIP_STARTUP_MODEL_PREWARM" in text
+    # The gateway we (re)start must be the same endpoint the Dashboard/CLI use,
+    # so start.ps1 derives port + token from the OpenClaw config instead of
+    # hardcoding a divergent gateway (which caused Agent1 to talk to a stale
+    # gateway that never reloaded the applied PatchRelay tool/skill config).
+    assert ".openclaw\\openclaw.json" in text
+    assert "$openclawConfig.gateway.port" in text
+    assert "$openclawConfig.gateway.auth.token" in text
+    # A schtasks gateway service owns the config port, so prefer restarting it
+    # (reloads config, no port conflict) and only fall back to a foreground run.
+    assert "openclaw gateway restart" in text
     assert (
-        "openclaw gateway run --port 19001 --auth token --token openclaw-local-token --bind loopback --force"
+        "openclaw gateway run --port $gatewayPort --auth token --token $gatewayToken --bind loopback --force"
         in text
     )
+    assert "http://127.0.0.1:$gatewayPort" in text
+    # The old hardcoded gateway endpoint must be gone.
+    assert "--port 19001 --auth token --token openclaw-local-token" not in text
 
 
 def test_runtime_stop_terminates_managed_process(tmp_path: Path, monkeypatch) -> None:

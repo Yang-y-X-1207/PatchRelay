@@ -6,6 +6,8 @@ from typing import Any
 
 import httpx
 
+from patchrelay.tui.task_status import display_task_status
+
 
 @dataclass(frozen=True)
 class PatchRelayClient:
@@ -113,7 +115,7 @@ class PatchRelayClient:
         worker_payload = self._artifact_dict(task, "patchrelay.worker")
         return {
             "taskId": task.get("taskId") or "-",
-            "status": task.get("status") or "unknown",
+            "status": display_task_status(task),
             "phase": task.get("phase") or "-",
             "worker": task.get("worker") or "-",
             "testStatus": summary_payload.get("testStatus") or tests_payload.get("status") or "-",

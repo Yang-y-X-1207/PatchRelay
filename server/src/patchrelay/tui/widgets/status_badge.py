@@ -19,7 +19,7 @@ class StatusBadge(Static):
             self.remove_class(class_name)
         if normalized in {"ok", "healthy", "ready", "completed"}:
             normalized = "ok"
-        elif normalized in {"running", "working", "busy", "queued"}:
+        elif normalized in {"running", "working", "busy", "queued", "testing", "finalizing"}:
             normalized = "running"
         elif normalized in {"warn", "warning", "pending"}:
             normalized = "warn"

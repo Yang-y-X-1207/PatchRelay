@@ -220,6 +220,8 @@ def test_generate_openclaw_commands_uses_config_values(tmp_path: Path) -> None:
     assert "openclaw plugins install" in joined
     assert "openclaw skills install" in joined
     assert "skills:" in joined
+    assert "alsoAllow" in joined
+    assert "patchrelay_submit_task" in joined
     assert "http://127.0.0.1:8787" in joined
     assert "secret-token" in joined
 
@@ -247,18 +249,24 @@ def test_build_openclaw_apply_steps_uses_structured_commands(tmp_path: Path) -> 
         "configure plugin",
         "install skill",
         "enable skill",
+        "allow plugin tools",
     ]
     assert steps[0].cwd == plugin_root
     assert "plugin:validate" in steps[0].command
-    assert steps[1].command[:3] == ["openclaw", "plugins", "install"]
+    assert steps[1].command[1:3] == ["plugins", "install"]
+    assert steps[1].direct_config_patch is True
     assert steps[2].stdin is not None
     assert "secret-token" in steps[2].stdin
-    assert steps[3].command[:3] == ["openclaw", "skills", "install"]
+    assert steps[3].command[1:3] == ["skills", "install"]
     assert str(plugin_root / "skills" / "patchrelay") in steps[3].command
     assert "--global" in steps[3].command
     assert steps[4].stdin is not None
     assert "skills" in steps[4].stdin
     assert "patchrelay: { enabled: true }" in steps[4].stdin
+    assert steps[5].stdin is not None
+    assert steps[5].direct_config_patch is True
+    assert "alsoAllow" in steps[5].stdin
+    assert "patchrelay_submit_task" in steps[5].stdin
 
 
 def test_apply_openclaw_config_falls_back_after_size_drop_rejection(
@@ -267,22 +275,27 @@ def test_apply_openclaw_config_falls_back_after_size_drop_rejection(
 ) -> None:
     config_path = tmp_path / "openclaw.json"
     config_path.write_text(
-        json.dumps({"plugins": {"entries": {"existing": {"enabled": True}}}}),
+        json.dumps(
+            {
+                "plugins": {"entries": {"existing": {"enabled": True}}},
+                "tools": {"alsoAllow": ["existing_tool"]},
+            }
+        ),
         encoding="utf-8",
     )
     settings = Settings(server=ServerConfig(host="127.0.0.1", port=8787, token="secret-token"))
 
     def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        if command == ["openclaw", "config", "patch", "--stdin"]:
+        if command[1:] == ["config", "patch", "--stdin"]:
             return subprocess.CompletedProcess(
                 command,
                 1,
                 "",
                 "Config write rejected: openclaw.json (size-drop:100->50).",
             )
-        if command == ["openclaw", "config", "file"]:
+        if command[1:] == ["config", "file"]:
             return subprocess.CompletedProcess(command, 0, str(config_path), "")
-        if command == ["openclaw", "config", "validate"]:
+        if command[1:] == ["config", "validate"]:
             return subprocess.CompletedProcess(command, 0, "Config valid\n", "")
         return subprocess.CompletedProcess(command, 0, "ok\n", "")
 
@@ -290,11 +303,18 @@ def test_apply_openclaw_config_falls_back_after_size_drop_rejection(
 
     results = apply_openclaw_config(settings, plugin_root=tmp_path / "plugins" / "openclaw")
 
-    assert [result.ok for result in results] == [True, True, True, True, True]
+    assert [result.ok for result in results] == [True, True, True, True, True, True]
     updated = json.loads(config_path.read_text(encoding="utf-8"))
     assert updated["plugins"]["entries"]["existing"]["enabled"] is True
+    assert updated["plugins"]["load"]["paths"] == [str(tmp_path / "plugins" / "openclaw")]
     assert updated["plugins"]["entries"]["patchrelay"]["config"]["token"] == "secret-token"
     assert updated["skills"]["entries"]["patchrelay"]["enabled"] is True
+    assert updated["tools"]["alsoAllow"] == [
+        "existing_tool",
+        "patchrelay_submit_task",
+        "patchrelay_get_task",
+        "patchrelay_cancel_task",
+    ]
 
 
 def test_apply_openclaw_config_stops_on_failed_step(
@@ -320,3 +340,34 @@ def test_apply_openclaw_config_stops_on_failed_step(
     assert len(results) == 1
     assert results[0].exit_code == 127
     assert calls == [["missing"]]
+
+
+def test_apply_openclaw_config_treats_existing_skill_as_installed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings(server=ServerConfig(token="secret-token"))
+    step = OpenClawApplyStep(
+        name="install skill",
+        command=["openclaw", "skills", "install"],
+        success_output_markers=("Skill already exists",),
+    )
+    next_step = OpenClawApplyStep(name="next", command=["next"])
+    calls = []
+
+    def fake_steps(settings: Settings, plugin_root: Path | None = None) -> list[OpenClawApplyStep]:
+        return [step, next_step]
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        if command == step.command:
+            return subprocess.CompletedProcess(command, 1, "", "Skill already exists at path.")
+        return subprocess.CompletedProcess(command, 0, "ok\n", "")
+
+    monkeypatch.setattr("patchrelay.onboarding.build_openclaw_apply_steps", fake_steps)
+    monkeypatch.setattr("patchrelay.onboarding.subprocess.run", fake_run)
+
+    results = apply_openclaw_config(settings, plugin_root=tmp_path)
+
+    assert [result.ok for result in results] == [True, True]
+    assert calls == [step.command, next_step.command]
