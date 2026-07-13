@@ -16,3 +16,5 @@ plugins/openclaw/dist/
 coverage/
 .coverage
 ~$*
+.idea/
+memory/

@@ -68,7 +68,19 @@ Get-Process uv -ErrorAction SilentlyContinue | ForEach-Object {
 # 5. Check ports and kill processes using them
 Write-Host "Checking ports..." -ForegroundColor Yellow
 
+# Include the gateway port from the OpenClaw config (the endpoint start.ps1 now
+# launches on) plus the legacy 19001 port so older sessions are also cleaned up.
 $ports = @(8787, 19001)
+$openclawConfigPath = Join-Path $env:USERPROFILE ".openclaw\openclaw.json"
+if (Test-Path $openclawConfigPath) {
+    try {
+        $openclawConfig = Get-Content $openclawConfigPath -Raw | ConvertFrom-Json
+        if ($openclawConfig.gateway.port) { $ports += [int]$openclawConfig.gateway.port }
+    } catch {
+        # Config unreadable; fall back to the default port list.
+    }
+}
+$ports = $ports | Sort-Object -Unique
 foreach ($port in $ports) {
     $connections = C:\\Windows\\System32\\netstat.exe -ano | Select-String ":$port " | Select-String "LISTENING"
     foreach ($conn in $connections) {
