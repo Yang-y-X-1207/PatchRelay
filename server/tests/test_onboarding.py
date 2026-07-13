@@ -232,7 +232,8 @@ def test_patchrelay_openclaw_skill_declares_delegate_boundaries() -> None:
     skill = skill_path.read_text(encoding="utf-8")
 
     assert "patchrelay_submit_task" in skill
-    assert "not for read-only lookup or trivial one-line edits" in skill
+    # "Do NOT use for:" boundary is now expressed as a section in the skill body
+    assert "Do NOT use" in skill
     assert "skills.entries.patchrelay.enabled" in skill
     assert "plugins.entries.patchrelay.enabled" in skill
 

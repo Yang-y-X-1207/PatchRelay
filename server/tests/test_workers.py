@@ -36,7 +36,7 @@ async def test_codex_worker_uses_configured_command(tmp_path: Path) -> None:
     assert result.worker == "codex"
     assert result.exit_code == 0
     assert "codex-out" in result.stdout
-    assert "exec --json hello" in result.stdout
+    assert "exec --json --dangerously-bypass-approvals-and-sandbox hello" in result.stdout
 
 
 async def test_claude_worker_uses_configured_command(tmp_path: Path) -> None:

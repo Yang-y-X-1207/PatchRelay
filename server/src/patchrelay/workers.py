@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import shutil
 import subprocess
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -74,39 +75,64 @@ class ProcessWorkerAdapter:
             process = subprocess.Popen(
                 command,
                 cwd=str(cwd),
+                stdin=subprocess.DEVNULL,  # close stdin so workers like Codex don't block waiting for input
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
                 encoding="utf-8",
                 errors="replace",
             )
+
+            # Drain stdout and stderr in background threads to prevent pipe-buffer
+            # deadlock. Workers like Codex emit a continuous stream of JSON events
+            # throughout their run; if we only read after the process exits the
+            # ~64 KB OS pipe buffer fills up and the worker blocks forever waiting
+            # for a reader — while we wait for the worker to exit. Reading in
+            # parallel threads breaks that deadlock.
+            stdout_chunks: list[str] = []
+            stderr_chunks: list[str] = []
+
+            def _drain(pipe, chunks: list[str]) -> None:
+                with contextlib.suppress(Exception):
+                    for line in pipe:
+                        chunks.append(line)
+
+            t_out = threading.Thread(target=_drain, args=(process.stdout, stdout_chunks), daemon=True)
+            t_err = threading.Thread(target=_drain, args=(process.stderr, stderr_chunks), daemon=True)
+            t_out.start()
+            t_err.start()
+
             started = time.monotonic()
             while process.poll() is None:
                 if cancel_event.is_set():
                     terminate_process_tree(process.pid)
-                    stdout, stderr = process.communicate()
+                    t_out.join(timeout=5)
+                    t_err.join(timeout=5)
                     return WorkerResult(
                         worker=self.name,
-                        stdout=stdout,
-                        stderr=(stderr + "\nWorker canceled.").strip(),
+                        stdout="".join(stdout_chunks),
+                        stderr=("".join(stderr_chunks) + "\nWorker canceled.").strip(),
                         exit_code=130,
                         canceled=True,
                     )
                 if time.monotonic() - started > self._timeout_seconds:
                     terminate_process_tree(process.pid)
-                    stdout, stderr = process.communicate()
+                    t_out.join(timeout=5)
+                    t_err.join(timeout=5)
                     return WorkerResult(
                         worker=self.name,
-                        stdout=stdout,
-                        stderr=(stderr + f"\nWorker timed out after {self._timeout_seconds} seconds.").strip(),
+                        stdout="".join(stdout_chunks),
+                        stderr=("".join(stderr_chunks) + f"\nWorker timed out after {self._timeout_seconds} seconds.").strip(),
                         exit_code=124,
                     )
                 time.sleep(0.05)
-            stdout, stderr = process.communicate()
+
+            t_out.join(timeout=10)
+            t_err.join(timeout=10)
             return WorkerResult(
                 worker=self.name,
-                stdout=stdout,
-                stderr=stderr,
+                stdout="".join(stdout_chunks),
+                stderr="".join(stderr_chunks),
                 exit_code=process.returncode or 0,
             )
         except FileNotFoundError as exc:
@@ -126,7 +152,15 @@ class WorkerRegistry:
         if selected == "codex":
             return ProcessWorkerAdapter(
                 "codex",
-                [*command_to_argv(self._settings.worker.codex_command), "exec", "--json"],
+                [
+                    *command_to_argv(self._settings.worker.codex_command),
+                    "exec",
+                    "--json",
+                    # PatchRelay provides git-worktree isolation as the external
+                    # sandbox, so we skip Codex's own interactive approval prompts.
+                    # Without this flag Codex blocks forever waiting for user input.
+                    "--dangerously-bypass-approvals-and-sandbox",
+                ],
                 self._settings.limits.task_timeout_seconds,
             )
         if selected == "claude":
