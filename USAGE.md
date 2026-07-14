@@ -1,218 +1,154 @@
-# PatchRelay 快速使用指南
+# PatchRelay Quick Start — by Agent combination
 
-## 🚀 一键启动
+Language: English | [简体中文](USAGE.zh-CN.md)
 
-在 PowerShell 中运行：
+PatchRelay is a **bridge between two coding agents**. You pick a pair:
+
+- **Agent1** — the front agent you talk to directly.
+- **Agent2** — the delegate that runs the actual coding work in an isolated Git
+  worktree, then returns status, diff, logs, and test results.
+
+The launcher decides *how* the two connect from the pair you choose:
+
+| Agent1 → Agent2 | Topology | What it feels like |
+|---|---|---|
+| `openclaw` → `claude` / `codex` | **Forward** | You chat in the OpenClaw dashboard; PatchRelay forwards each coding task to Agent2. |
+| `claude` / `codex` → the other | **Ping-pong** | A desktop Claude/Codex session is your front agent; it relays tasks to Agent2 and reviews the result, hop after hop. |
+
+## One command
 
 ```powershell
 cd C:\path\to\PatchRelay\server
-.\start.ps1
+.\launch.ps1
 ```
 
-这个命令会依次打开：
-1. **OpenClaw Gateway** 窗口（端口 19001）
-2. **PatchRelay Server** 窗口（端口 8787）
-3. **PatchRelay TUI** 监控界面
-4. **OpenClaw Dashboard**（浏览器）
-
-## 📋 启动后等待时间
-
-- Gateway 启动：约 **5-10 秒**
-- Server 启动：约 **10 秒**
-- TUI 启动：约 **15 秒**
-- **总计约 30 秒**所有服务完全就绪
-
-## 🎯 使用流程
-
-1. **运行启动脚本**
-   ```powershell
-   .\start.ps1
-   ```
-
-2. **等待所有窗口打开**（约 30 秒）
-   - 确认每个窗口都显示 "ready" 或类似就绪状态
-
-3. **在 OpenClaw Dashboard 中对话**
-   - 浏览器会自动打开
-   - 直接与 AI 对话，例如：
-     ```
-     "请帮我在 README.md 中添加一个使用示例"
-     "修复登录页面的 CSS 样式问题"
-     "重构 utils.js 中的日期处理函数"
-     ```
-
-4. **AI 自动调用 PatchRelay**
-   - AI 会识别编码任务
-   - 自动使用 `patchrelay_submit_task` 工具
-   - Claude Code 在后台执行任务
-
-5. **在 TUI 窗口监控进度**
-   - 实时查看任务状态
-   - 查看执行日志
-   - 查看 diff 和变更
-
-## 🛑 停止服务
+`launch.ps1` asks two questions — *who is Agent1?* and *who is Agent2?* — then
+starts exactly the components that pair needs. To skip the menu:
 
 ```powershell
-.\stop.ps1
+.\launch.ps1 -Agent1 openclaw -Agent2 codex     # forward
+.\launch.ps1 -Agent1 claude   -Agent2 codex     # ping-pong
+.\launch.ps1 -Agent1 codex    -Agent2 claude -DryRun   # print the plan, launch nothing
 ```
 
-或直接关闭所有 PowerShell 窗口。
-
-## ⚠️ 常见问题
-
-### 问题 1：端口被占用
-
-**错误信息**：`[winerror 10048] 通常每个套接字地址(协议/网络地址/端口)只允许使用一次`
-
-**解决方法**：
-```powershell
-# 1. 停止所有服务
-.\stop.ps1
-
-# 2. 如果还不行，强制停止
-Get-Process python -ErrorAction SilentlyContinue | Stop-Process -Force
-Get-Process node -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like "*openclaw*" } | Stop-Process -Force
-
-# 3. 重新启动
-.\start.ps1
-```
-
-### 问题 2：某个窗口启动失败
-
-**解决方法**：
-1. 关闭所有窗口
-2. 运行 `.\stop.ps1`
-3. 等待 5 秒
-4. 重新运行 `.\start.ps1`
-
-### 问题 3：Dashboard 没有打开
-
-**手动打开**：
-```powershell
-openclaw dashboard
-```
-
-### 问题 4：需要输入 Token
-
-**Token 位置**：
-- 脚本运行时会显示 token
-- 或查看配置文件：`.\patchrelay.yaml` 中的 `server.token`
-- 默认 token：`UEbjEGJaLR_UwEeHXf4PGAoTyzLIDJttXD2Ma6kt6JU`
-
-## 📁 文件说明
-
-### 脚本文件（在 `server/` 目录）
-
-- **`start.ps1`** - 一键启动所有服务
-- **`stop.ps1`** - 一键停止所有服务
-- **`patchrelay.yaml`** - PatchRelay 配置文件
-
-### 配置文件
-
-**OpenClaw 配置**：`~/.config/openclaw/config.json`
-```json
-{
-  "plugins": {
-    "entries": {
-      "patchrelay": {
-        "enabled": true,
-        "config": {
-          "baseUrl": "http://127.0.0.1:8787",
-          "token": "UEbjEGJaLR_UwEeHXf4PGAoTyzLIDJttXD2Ma6kt6JU"
-        }
-      }
-    }
-  }
-}
-```
-
-## 🔧 高级配置
-
-### 修改目标代码仓库
-
-编辑 `patchrelay.yaml`：
-```yaml
-repo:
-  path: C:\path\to\your\project  # 改为你的项目路径
-  base_branch: main              # 改为你的主分支
-```
-
-### 修改测试命令
-
-编辑 `patchrelay.yaml`：
-```yaml
-tests:
-  default:
-    command:
-    - pytest              # Python 项目
-    # - npm test          # Node.js 项目
-    # - mvn test          # Java 项目
-```
-
-### 修改超时时间
-
-编辑 `patchrelay.yaml`：
-```yaml
-limits:
-  task_timeout_seconds: 7200  # 2 小时
-```
-
-## 📊 工作原理
-
-```
-用户在 OpenClaw Dashboard 对话
-    ↓
-AI 识别编码任务，调用 patchrelay_submit_task
-    ↓
-PatchRelay 接收任务，创建隔离的 Git worktree
-    ↓
-Claude Code 在后台执行任务
-    ↓
-PatchRelay 收集结果（diff, 日志, 测试结果）
-    ↓
-返回结果给 OpenClaw，显示在对话中
-    ↓
-用户在 TUI 中可以实时监控整个过程
-```
-
-## 🎓 完整示例
+Prerequisite (once): a working `patchrelay.yaml`. If you don't have one:
 
 ```powershell
-# 1. 启动环境
-cd C:\path\to\PatchRelay\server
-.\start.ps1
-
-# 2. 等待 30 秒让所有服务就绪
-
-# 3. 在 OpenClaw Dashboard 中对话
-# "请帮我优化 src/utils.js 中的日期格式化函数"
-
-# 4. 在 TUI 窗口中观察任务执行
-
-# 5. 任务完成后，查看结果
-# 可以在 OpenClaw Dashboard 中看到 AI 返回的代码变更和说明
-
-# 6. 停止服务
-.\stop.ps1
+uv run patchrelay setup --config .\patchrelay.yaml --yes
 ```
-
-## 📝 注意事项
-
-1. **首次使用**需要等待较长时间（约 30 秒）
-2. **端口冲突**时先运行 `.\stop.ps1`
-3. **Token** 在脚本运行时会显示，保存备用
-4. **关闭窗口**就等于停止该服务
-5. **TUI 界面**按 Ctrl+C 退出
-6. **任务隔离**：每个任务在独立的 Git worktree 中执行，不影响主分支
-
-## 🆘 获取帮助
-
-- 查看服务状态：`uv run patchrelay runtime status --config .\patchrelay.yaml`
-- 查看任务列表：`uv run patchrelay tasks --token <your-token>`
-- 查看任务事件：`uv run patchrelay logs <task-id> --token <your-token>`
-- 清理旧任务：`uv run patchrelay cleanup --config .\patchrelay.yaml --force`
 
 ---
 
-**享受使用 PatchRelay！** 🎉
+## Scenario A — OpenClaw → Claude (forward)
+
+You talk to OpenClaw in the browser dashboard; Claude Code runs the changes.
+
+```powershell
+.\launch.ps1 -Agent1 openclaw -Agent2 claude
+```
+
+This starts the full stack (OpenClaw Gateway + PatchRelay Server + TUI +
+Dashboard) and points OpenClaw's default worker at Claude.
+
+1. Wait for the four windows/browser to come up (~30s).
+2. In the dashboard, ask for a coding change:
+   `"Add a list_by_status method to the TaskStore class and make the tests pass."`
+3. OpenClaw calls `patchrelay_submit_task` automatically; Claude runs it in an
+   isolated worktree.
+4. Watch progress in the **TUI** window; read the diff / test result there or in
+   the dashboard reply.
+
+## Scenario B — OpenClaw → Codex (forward)
+
+Same as A, but Codex is the delegate.
+
+```powershell
+.\launch.ps1 -Agent1 openclaw -Agent2 codex
+```
+
+Everything else is identical to Scenario A.
+
+## Scenario C — Claude → Codex (ping-pong)
+
+A **desktop Claude** session is your front agent. You talk to it; it delegates
+implementation to Codex and reviews the result.
+
+```powershell
+.\launch.ps1 -Agent1 claude -Agent2 codex
+```
+
+This starts the PatchRelay Server + TUI, then opens a Claude session wired up as
+Agent1 (`PATCHRELAY_URL` / `PATCHRELAY_TOKEN` / `PATCHRELAY_PARTNER=codex` set,
+the Agent1 contract injected via `--append-system-prompt-file`).
+
+1. In the Claude window, describe the work:
+   `"Design a small calculator module in calc.py — add/subtract/multiply/divide with docstrings, then have it implemented and tested."`
+2. Claude turns it into a brief and delegates:
+   `patchrelay submit "<brief>" --worker codex --wait`.
+3. Codex runs the change on an isolated branch; Claude reads the diff/tests,
+   reviews, and either reports back or refines and delegates the next hop.
+4. Monitor every hop in the **TUI**.
+
+## Scenario D — Codex → Claude (ping-pong)
+
+Mirror of C: a **desktop Codex** session is the front agent, delegating to Claude.
+
+```powershell
+.\launch.ps1 -Agent1 codex -Agent2 claude
+```
+
+Codex is opened with an initial prompt telling it to read its Agent1 contract
+(`server/agent1/codex-agent1.md`) and relay coding work to Claude via the
+`patchrelay` CLI.
+
+---
+
+## Stopping
+
+```powershell
+.\stop.ps1
+```
+
+Or close the windows. In ping-pong mode, closing the desktop Agent1 window ends
+your front session; `.\stop.ps1` stops the Server (and Gateway, if running).
+
+## Worker outcomes you may see
+
+- **completed** — worker finished and the test profile passed.
+- **failed** — worker exited non-zero, or tests failed. The diff is still captured.
+- **timed_out** — the worker hit its wall-clock ceiling
+  (`limits.worker_timeout_seconds`, default 30 min). If it left changes, the diff
+  is preserved and tests still run — it is not discarded as a plain failure.
+
+## Troubleshooting
+
+**Port already in use** — `.\stop.ps1`, wait a few seconds, launch again.
+
+**Agent1 window can't reach PatchRelay** — confirm the Server window is up on
+port 8787 and that `patchrelay.yaml` has a real `server.token`. The Agent1
+session reads `PATCHRELAY_URL` / `PATCHRELAY_TOKEN` from its environment; the
+launcher sets these for you.
+
+**OpenClaw doesn't see the tools (forward mode)** — the launcher delegates to
+`start.ps1`, which reconciles the plugin/skill/tools with the gateway config. If
+tools still don't appear, run `uv run patchrelay openclaw apply --config .\patchrelay.yaml --apply`.
+
+**Change the target repo or tests** — edit `patchrelay.yaml`:
+
+```yaml
+repo:
+  path: C:\path\to\your\project
+  base_branch: main
+tests:
+  default:
+    command: ["python", "-m", "pytest"]   # or ["npm", "test"], ["mvn", "test"]
+```
+
+## Handy commands
+
+```powershell
+uv run patchrelay runtime status --config .\patchrelay.yaml   # service status
+uv run patchrelay tasks --token <token>                        # list tasks
+uv run patchrelay logs <task-id> --token <token>               # task timeline
+uv run patchrelay cleanup --config .\patchrelay.yaml --force   # clean worktrees/branches
+```
