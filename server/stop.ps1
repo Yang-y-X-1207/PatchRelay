@@ -53,7 +53,29 @@ Get-Process node -ErrorAction SilentlyContinue | ForEach-Object {
     }
 }
 
-# 4. Stop any remaining uv processes
+# 4. Stop desktop Agent1 sessions started by launch.ps1 (ping-pong mode).
+# These are interactive claude/codex sessions the launcher opens as the front
+# agent. Match ONLY on the Agent1 instruction-file marker in the command line
+# (claude-agent1.md / codex-agent1.md) so we never kill an unrelated claude or
+# codex session the user is running elsewhere (including this one, or an
+# in-flight Agent2 worker) — those command lines do not contain that marker.
+Write-Host "Stopping desktop Agent1 sessions..." -ForegroundColor Yellow
+Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+    $_.CommandLine -and (
+        $_.CommandLine -like "*claude-agent1.md*" -or
+        $_.CommandLine -like "*codex-agent1.md*"
+    )
+} | ForEach-Object {
+    try {
+        Stop-Process -Id $_.ProcessId -Force
+        Write-Host "  [OK] Stopped Agent1 session (PID: $($_.ProcessId))" -ForegroundColor Green
+        $stopped++
+    } catch {
+        # Process might have already exited
+    }
+}
+
+# 5. Stop any remaining uv processes
 Write-Host "Cleaning up UV processes..." -ForegroundColor Yellow
 Get-Process uv -ErrorAction SilentlyContinue | ForEach-Object {
     try {
@@ -65,7 +87,7 @@ Get-Process uv -ErrorAction SilentlyContinue | ForEach-Object {
     }
 }
 
-# 5. Check ports and kill processes using them
+# 6. Check ports and kill processes using them
 Write-Host "Checking ports..." -ForegroundColor Yellow
 
 # Include the gateway port from the OpenClaw config (the endpoint start.ps1 now
