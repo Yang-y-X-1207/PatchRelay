@@ -2,22 +2,30 @@
 
 语言：[English](README.md) | 简体中文
 
-PatchRelay 是一个面向 Agent 编码任务的本地执行中继。它接收来自 OpenClaw 或其他网关的编码请求，把任务交给本地编码 worker，例如 Claude Code 或 Codex，然后返回任务状态、日志、diff、测试结果和 artifacts。
+PatchRelay 是**两个编码 Agent 之间的桥**。你选一对：**Agent1**（你直接对话的前端 Agent）和 **Agent2**（被委派执行实际编码工作的一方）。PatchRelay 把任务中继给 Agent2，隔离到 Git worktree，运行你的测试，然后返回状态、日志、diff、测试结果和 artifacts。
 
-如果你想直接启动和测试，请先看快速启动指南：[USAGE.md](USAGE.md)。
+- 第一次来？先读图文介绍：[INTRODUCTION.zh-CN.md](INTRODUCTION.zh-CN.md)。
+- 想马上跑起来？按 Agent 组合分场景的快速上手：[USAGE.zh-CN.md](USAGE.zh-CN.md)。
 
 ## 当前阶段
 
-PatchRelay 当前处于 **基本可用 MVP** 阶段。单机执行闭环已经实现，并且已经在本地验证：
+PatchRelay 当前处于 **基本可用 MVP** 阶段。单机中继闭环已经实现并在本地验证。放在前端的是哪个 Agent，决定了拓扑：
 
 ```text
-OpenClaw Dashboard/Gateway
-  -> PatchRelay OpenClaw 插件
-  -> PatchRelay Python server
-  -> Claude Code 或 Codex worker
-  -> Git worktree、测试、artifacts
-  -> OpenClaw 结果展示或 PatchRelay TUI
+转发（Agent1 = OpenClaw）：
+  OpenClaw 面板  ->  PatchRelay  ->  Claude 或 Codex  ->  git worktree + 测试
+    （你对话）                          (Agent2)
+
+乒乓（Agent1 = Claude 或 Codex）：
+  你 -> 桌面 Claude/Codex -> PatchRelay -> 另一个 Agent -> git worktree + 测试
+   ^        (Agent1)                        (Agent2)             |
+   +--------- review <-- diff / 测试 <-------------------------------+
 ```
+
+| Agent1 → Agent2 | 拓扑 | 状态 |
+|---|---|---|
+| OpenClaw → Claude / Codex | 转发：单向委派 | 已验证 |
+| Claude ↔ Codex（任一在前端） | 乒乓：桌面会话逐跳接力 | 接力已验证；用 `launch.ps1` 启动 |
 
 这还不是生产级高可用系统。当前重点是把本地闭环跑稳定：提交编码任务，隔离到 Git worktree，运行配置好的 worker，收集 artifacts，然后查看结果。
 
@@ -33,9 +41,12 @@ OpenClaw Dashboard/Gateway
 - artifact 收集：summary、changed files、diff、worker logs、test output。
 - OpenClaw TypeScript 插件，暴露 `patchrelay_submit_task`、`patchrelay_get_task`、`patchrelay_cancel_task`。
 - OpenClaw 插件安装和配置辅助命令。
+- 多 Agent 接力：一个 worker 可通过 `.patchrelay/handoff.json` 哨兵把任务交棒给另一个 worker（乒乓），并有可配置的深度守卫，接力链不会无限循环。
+- 桌面 Agent1 模式：前端的 Claude/Codex 会话通过 `patchrelay` CLI 把编码工作委派给另一个 Agent（指令约定在 `server/agent1/`）。
+- 柔性 `timed_out` 结果：worker 卡住但留下有效 diff 时会保留它（并照常跑测试），不再当作纯失败丢弃；独立、更短的 `worker_timeout_seconds`。
 - CLI：init、setup、doctor、runtime start/status/stop、smoke、submit、wait、logs、tasks、cancel、cleanup。
 - Textual 全屏 TUI：任务 dashboard、筛选、任务详情、artifact 预览、新任务提交、setup wizard、runtime 控制、smoke test、自动刷新和快捷键。
-- Windows PowerShell `server/start.ps1` 和 `server/stop.ps1`，用于本地一键启动和停止。
+- Windows PowerShell 启动器：`server/launch.ps1`（交互式 Agent1/Agent2 选择器），以及 `server/start.ps1` / `server/stop.ps1` 用于全栈启动/停止。
 
 ## 尚未实现
 
@@ -49,35 +60,44 @@ OpenClaw Dashboard/Gateway
 
 ## 快速启动
 
-面向用户的快速启动指南在 [USAGE.md](USAGE.md)。它覆盖：
+面向用户的快速启动指南在 [USAGE.md](USAGE.md)（[中文版](USAGE.zh-CN.md)），按 Agent 组合分场景。它覆盖：
 
 - 安装依赖
-- 运行 `server/start.ps1`
-- 启动 OpenClaw Gateway、PatchRelay Server、PatchRelay TUI 和 OpenClaw Dashboard
-- 从 OpenClaw 提交任务
-- 在 TUI 里查看任务进度
+- 选择 Agent1/Agent2 并用 `server/launch.ps1` 启动
+- 四种组合（OpenClaw→Claude、OpenClaw→Codex、Claude↔Codex）
+- 提交任务并在 TUI 里查看进度
 - 使用 `server/stop.ps1` 停止服务
 - 常见本地问题排查
 
-最短启动方式：
+最短启动方式 —— 一条命令，选你的两个 Agent：
 
 ```powershell
 cd C:\path\to\PatchRelay\server
-.\start.ps1
+.\launch.ps1
 ```
 
-然后等待 Gateway、server、TUI 和浏览器 dashboard 启动完成。完整流程请看 [USAGE.md](USAGE.md)。
+`launch.ps1` 会问谁是 Agent1、谁是 Agent2，然后只启动这一对需要的组件。
+可以用参数跳过菜单，或只预览不启动：
+
+```powershell
+.\launch.ps1 -Agent1 openclaw -Agent2 codex          # 转发全栈
+.\launch.ps1 -Agent1 claude   -Agent2 codex          # 桌面乒乓
+.\launch.ps1 -Agent1 codex    -Agent2 claude -DryRun # 只打印计划
+```
+
+`start.ps1` 仍然保留，用于直接启动 OpenClaw 全栈。完整流程请看 [USAGE.md](USAGE.md)。
 
 ## 仓库结构
 
 ```text
 .
+|-- INTRODUCTION.md         # 图文项目介绍（桥心智模型）
 |-- README.md               # 项目概览和当前状态
 |-- README.zh-CN.md         # 中文 README
-|-- USAGE.md                # 快速启动和本地测试指南
+|-- USAGE.md                # 按 Agent 组合分场景的快速上手（中英）
 |-- prd.md                  # 产品需求和路线说明
 |-- ARCHITECTURE_ROADMAP.md # 架构演进说明
-|-- server/                 # Python PatchRelay server、CLI、TUI、脚本
+|-- server/                 # Python server、CLI、TUI、launch.ps1、agent1/ 指令
 |-- plugins/openclaw/       # OpenClaw TypeScript 插件
 |-- docs/                   # 其他规划和产品文档
 ```

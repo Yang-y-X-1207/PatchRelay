@@ -2,22 +2,30 @@
 
 Language: English | [Simplified Chinese](README.zh-CN.md)
 
-PatchRelay is a local execution relay for agentic coding tasks. It receives coding requests from OpenClaw or another gateway, sends the work to a local coding worker such as Claude Code or Codex, and returns task status, logs, diffs, test results, and artifacts.
+PatchRelay is a **bridge between two coding agents**. You pick a pair: **Agent1** (the front agent you talk to) and **Agent2** (the delegate that runs the actual coding work). PatchRelay relays the task to Agent2, isolates it in a Git worktree, runs your tests, and returns status, logs, diffs, test results, and artifacts.
 
-For hands-on startup and testing, start with the quick start guide: [USAGE.md](USAGE.md).
+- New here? Read the illustrated intro: [INTRODUCTION.md](INTRODUCTION.md).
+- Want to run it now? Quick start by Agent combination: [USAGE.md](USAGE.md).
 
 ## Current Stage
 
-PatchRelay is currently a **basic usable MVP**. The single-node execution loop is implemented and has been verified locally:
+PatchRelay is currently a **basic usable MVP**. The single-node relay loop is implemented and verified locally. Which agent you put in front decides the topology:
 
 ```text
-OpenClaw Dashboard/Gateway
-  -> PatchRelay OpenClaw plugin
-  -> PatchRelay Python server
-  -> Claude Code or Codex worker
-  -> Git worktree, tests, artifacts
-  -> OpenClaw result view or PatchRelay TUI
+Forward (Agent1 = OpenClaw):
+  OpenClaw dashboard  ->  PatchRelay  ->  Claude or Codex  ->  git worktree + tests
+       (you chat)                            (Agent2)
+
+Ping-pong (Agent1 = Claude or Codex):
+  you -> desktop Claude/Codex -> PatchRelay -> the other agent -> git worktree + tests
+   ^         (Agent1)                             (Agent2)              |
+   +--------- review <-- diff / tests <----------------------------------+
 ```
+
+| Agent1 → Agent2 | Topology | Status |
+|---|---|---|
+| OpenClaw → Claude / Codex | Forward: one-way delegation | Verified |
+| Claude ↔ Codex (either in front) | Ping-pong: desktop session relays hop by hop | Verified relay; launched via `launch.ps1` |
 
 The project is not yet a production high-availability system. The current focus is a stable local loop: submit a coding task, isolate it in a Git worktree, run a configured worker, collect artifacts, and inspect the result.
 
@@ -33,9 +41,12 @@ The project is not yet a production high-availability system. The current focus 
 - Artifact collection for summary, changed files, diff, worker logs, and test output.
 - OpenClaw TypeScript plugin exposing `patchrelay_submit_task`, `patchrelay_get_task`, and `patchrelay_cancel_task`.
 - OpenClaw setup helpers for plugin install/config patching.
+- Multi-agent relay: a worker may hand a task off to another worker via a `.patchrelay/handoff.json` sentinel (ping-pong), with a configurable depth guard so a relay chain cannot loop forever.
+- Desktop Agent1 mode: a front-facing Claude/Codex session delegates coding work to the other agent through the `patchrelay` CLI (instruction contracts in `server/agent1/`).
+- Soft `timed_out` outcome: a worker that stalls but leaves a valid diff preserves it (and still runs tests) instead of being discarded as a plain failure; separate, shorter `worker_timeout_seconds`.
 - CLI commands for init, setup, doctor, runtime start/status/stop, smoke tests, submit, wait, logs, tasks, cancel, and cleanup.
 - Full-screen Textual TUI with task dashboard, filtering, task detail, artifact preview, task submission, setup wizard, runtime controls, smoke test action, auto-refresh, and keyboard shortcuts.
-- Windows PowerShell `server/start.ps1` and `server/stop.ps1` scripts for local one-command startup/shutdown.
+- Windows PowerShell launchers: `server/launch.ps1` (interactive Agent1/Agent2 picker) plus `server/start.ps1` / `server/stop.ps1` for the full-stack startup/shutdown.
 
 ## Not Implemented Yet
 
@@ -49,24 +60,33 @@ The project is not yet a production high-availability system. The current focus 
 
 ## Quick Start
 
-The user-facing quick start lives in [USAGE.md](USAGE.md). It covers:
+The user-facing quick start lives in [USAGE.md](USAGE.md), organized by Agent combination. It covers:
 
 - installing dependencies
-- running `server/start.ps1`
-- starting OpenClaw Gateway, PatchRelay Server, PatchRelay TUI, and OpenClaw Dashboard
-- submitting a task from OpenClaw
-- watching task progress in the TUI
+- picking Agent1/Agent2 and launching with `server/launch.ps1`
+- the four combinations (OpenClaw→Claude, OpenClaw→Codex, Claude↔Codex)
+- submitting a task and watching progress in the TUI
 - stopping services with `server/stop.ps1`
 - common local troubleshooting
 
-Short version:
+Short version — one command, pick your two agents:
 
 ```powershell
 cd C:\path\to\PatchRelay\server
-.\start.ps1
+.\launch.ps1
 ```
 
-Then wait for the Gateway, server, TUI, and browser dashboard to finish starting. See [USAGE.md](USAGE.md) for the complete walkthrough.
+`launch.ps1` asks who Agent1 and Agent2 are, then starts exactly what that pair
+needs. Skip the menu with flags, or preview without launching:
+
+```powershell
+.\launch.ps1 -Agent1 openclaw -Agent2 codex          # forward stack
+.\launch.ps1 -Agent1 claude   -Agent2 codex          # desktop ping-pong
+.\launch.ps1 -Agent1 codex    -Agent2 claude -DryRun # print the plan only
+```
+
+`start.ps1` still exists for the full OpenClaw stack directly. See
+[USAGE.md](USAGE.md) for the complete walkthrough.
 
 ## Repository Layout
 
@@ -74,10 +94,16 @@ Then wait for the Gateway, server, TUI, and browser dashboard to finish starting
 .
 |-- README.md               # Project overview and current status
 |-- README.zh-CN.md         # Chinese README
-|-- USAGE.md                # Quick start and local testing guide
+|-- INTRODUCTION.md         # Illustrated intro (bridge model, topologies)
+|-- INTRODUCTION.zh-CN.md   # Chinese illustrated intro
+|-- USAGE.md                # Quick start by Agent combination
+|-- USAGE.zh-CN.md          # Chinese quick start
 |-- prd.md                  # Product requirements and roadmap notes
 |-- ARCHITECTURE_ROADMAP.md # Architecture evolution notes
 |-- server/                 # Python PatchRelay server, CLI, TUI, scripts
+|   |-- launch.ps1          # Interactive Agent1/Agent2 relay launcher
+|   |-- start.ps1 / stop.ps1 # Full-stack startup / shutdown
+|   `-- agent1/             # Desktop Agent1 instruction contracts (claude, codex)
 |-- plugins/openclaw/       # OpenClaw TypeScript plugin
 |-- docs/                   # Additional planning and product documents
 ```
