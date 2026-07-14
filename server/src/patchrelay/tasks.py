@@ -9,7 +9,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from patchrelay.artifacts import build_summary_content, clean_diff, clean_log
 from patchrelay.config import Settings
@@ -26,6 +26,7 @@ class TaskStatus(StrEnum):
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELED = "canceled"
+    HANDED_OFF = "handed_off"
 
 
 class PatchRelayMetadata(BaseModel):
@@ -36,6 +37,27 @@ class PatchRelayMetadata(BaseModel):
     # worker sees the previous worker's edits (the ping-pong relay case).
     # "fresh" branches a new worktree from the base branch (independent work).
     worktreeStrategy: Literal["shared", "fresh"] = "shared"
+
+
+class HandoffRequest(BaseModel):
+    """A worker's request to hand the task off to the next worker.
+
+    Parsed from the ``.patchrelay/handoff.json`` sentinel a worker writes at
+    its worktree root. Only ``worker`` and ``instruction`` are required; the
+    rest default to the ping-pong relay case (continue on the shared worktree).
+    """
+
+    worker: WorkerName
+    instruction: str
+    worktreeStrategy: Literal["shared", "fresh"] = "shared"
+    testProfile: str = "default"
+
+    @field_validator("instruction")
+    @classmethod
+    def instruction_must_not_be_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("handoff instruction must not be blank")
+        return value
 
 
 class A2AMessagePart(BaseModel):
@@ -167,18 +189,35 @@ class TaskService:
         instruction = extract_instruction(request)
         metadata = parse_patchrelay_metadata(request.metadata, self._settings)
         parent = await self._resolve_parent(metadata.parentTaskId)
+        return await self._enqueue_task(
+            instruction=instruction,
+            worker=metadata.worker,
+            test_profile=metadata.testProfile,
+            parent=parent,
+            worktree_strategy=metadata.worktreeStrategy,
+        )
+
+    async def _enqueue_task(
+        self,
+        *,
+        instruction: str,
+        worker: WorkerName,
+        test_profile: str,
+        parent: TaskRecord | None,
+        worktree_strategy: str,
+    ) -> TaskRecord:
         now = utcnow()
         record = TaskRecord(
             id=uuid.uuid4().hex,
             instruction=instruction,
-            worker=metadata.worker,
-            test_profile=metadata.testProfile,
+            worker=worker,
+            test_profile=test_profile,
             status=TaskStatus.SUBMITTED,
             created_at=now,
             updated_at=now,
-            parent_task_id=metadata.parentTaskId,
+            parent_task_id=parent.id if parent else None,
             handoff_depth=(parent.handoff_depth + 1) if parent else 0,
-            worktree_strategy=metadata.worktreeStrategy,
+            worktree_strategy=worktree_strategy,
         )
 
         async with self._lock:
@@ -323,6 +362,10 @@ class TaskService:
             return
         if worker_result.failed:
             await self._finalize_failed_after_worker(task_id, workspace.worktree_path, worker_result)
+            return
+        handoff = await self._pickup_handoff(task_id, workspace.worktree_path)
+        if handoff is not None:
+            await self._finalize_handed_off(task_id, workspace, worker_result, handoff)
             return
         test_result = await self._run_tests(task_id, workspace.worktree_path)
         changed_files, diff_text = await self._collect_git_results(task_id, workspace.worktree_path)
@@ -520,6 +563,148 @@ class TaskService:
                 exit_code=worker_result.exit_code,
             )
             self._save_task(record)
+
+    async def _pickup_handoff(self, task_id: str, worktree_path: Path) -> HandoffRequest | None:
+        """Read + consume the handoff sentinel a worker may leave in its worktree.
+
+        A worker requests a handoff by writing ``.patchrelay/handoff.json`` at
+        the worktree root: ``{"worker": "codex", "instruction": "..."}``. If the
+        file is present and valid we return the parsed request; the sentinel is
+        always deleted so it never leaks into the diff and never re-fires. A
+        malformed sentinel is logged and ignored (task completes normally).
+        """
+        sentinel = worktree_path / ".patchrelay" / "handoff.json"
+        if not sentinel.exists():
+            return None
+        raw = await asyncio.to_thread(self._read_and_remove_sentinel, sentinel)
+        if raw is None:
+            return None
+        try:
+            request = HandoffRequest.model_validate_json(raw)
+        except Exception as exc:  # noqa: BLE001 - defensive parse guard
+            await self._append_handoff_note(
+                task_id, f"Ignored malformed handoff sentinel: {exc}", severity="warning"
+            )
+            return None
+        if request.testProfile not in self._settings.tests:
+            await self._append_handoff_note(
+                task_id,
+                f"Ignored handoff: unknown testProfile '{request.testProfile}'.",
+                severity="warning",
+            )
+            return None
+        return request
+
+    @staticmethod
+    def _read_and_remove_sentinel(sentinel: Path) -> str | None:
+        try:
+            raw = sentinel.read_text(encoding="utf-8")
+        except OSError:
+            return None
+        finally:
+            with contextlib.suppress(OSError):
+                sentinel.unlink()
+        return raw
+
+    async def _append_handoff_note(self, task_id: str, message: str, *, severity: str = "info") -> None:
+        async with self._lock:
+            record = self._tasks.get(task_id)
+            if record is None:
+                return
+            append_event(record, "handoff", message, severity=severity, status=record.status)
+            record.updated_at = utcnow()
+            self._save_task(record)
+
+    async def _finalize_handed_off(
+        self,
+        task_id: str,
+        workspace: Workspace,
+        worker_result: WorkerResult,
+        handoff: HandoffRequest,
+    ) -> None:
+        """Complete the current hop and enqueue the next worker in the chain.
+
+        The current task is marked ``handed_off`` (a terminal state for this
+        hop) with its artifacts attached, then a child task is enqueued. Tests
+        are intentionally skipped: intermediate hops (e.g. a scaffold) are not
+        expected to pass the suite — only the final hop runs tests normally.
+        A depth guard converts an over-deep handoff into a normal completion so
+        ping-pong chains cannot run forever.
+        """
+        changed_files = await asyncio.to_thread(
+            self._workspace_manager.collect_changed_files, workspace.worktree_path
+        )
+        diff_text = await asyncio.to_thread(self._workspace_manager.collect_diff, workspace.worktree_path)
+        skipped_tests = TestRunResult(
+            profile="handoff",
+            command=[],
+            stdout="",
+            stderr="Tests skipped for handoff hop; deferred to the final worker.",
+            exit_code=0,
+            duration_seconds=0,
+        )
+
+        async with self._lock:
+            record = self._tasks.get(task_id)
+            if record is None or record.status == TaskStatus.CANCELED:
+                return
+            next_depth = record.handoff_depth + 1
+            if next_depth > self._settings.limits.max_handoff_depth:
+                append_event(
+                    record,
+                    "handoff",
+                    (
+                        f"Handoff to '{handoff.worker}' refused: max depth "
+                        f"{self._settings.limits.max_handoff_depth} reached. Completing task."
+                    ),
+                    severity="warning",
+                    status=record.status,
+                )
+                record.status = TaskStatus.COMPLETED
+                record.phase = "completed"
+                record.completed_at = utcnow()
+                record.updated_at = record.completed_at
+                self._attach_artifacts(
+                    record,
+                    changed_files=changed_files,
+                    diff_text=diff_text,
+                    test_result=skipped_tests,
+                    worker_result=worker_result,
+                    exit_code=0,
+                )
+                self._save_task(record)
+                return
+
+            record.status = TaskStatus.HANDED_OFF
+            record.phase = "handed_off"
+            record.completed_at = utcnow()
+            record.updated_at = record.completed_at
+            append_event(
+                record,
+                "handed_off",
+                f"Handed off to worker '{handoff.worker}' (depth {next_depth}).",
+                status=record.status,
+            )
+            self._attach_artifacts(
+                record,
+                changed_files=changed_files,
+                diff_text=diff_text,
+                test_result=skipped_tests,
+                worker_result=worker_result,
+                exit_code=0,
+            )
+            self._save_task(record)
+
+        child = await self._enqueue_task(
+            instruction=handoff.instruction,
+            worker=handoff.worker,
+            test_profile=handoff.testProfile,
+            parent=record,
+            worktree_strategy=handoff.worktreeStrategy,
+        )
+        await self._append_handoff_note(
+            task_id, f"Enqueued child task {child.id} for worker '{handoff.worker}'."
+        )
 
     async def _run_tests(self, task_id: str, worktree_path: Path) -> TestRunResult:
         async with self._lock:

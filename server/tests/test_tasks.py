@@ -1,10 +1,18 @@
+import sys
 import time
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
 from patchrelay.app import create_app
-from patchrelay.config import LimitsConfig, RepoConfig, ServerConfig, Settings, TestProfile as ConfigTestProfile
+from patchrelay.config import (
+    LimitsConfig,
+    RepoConfig,
+    ServerConfig,
+    Settings,
+    TestProfile as ConfigTestProfile,
+    WorkerConfig,
+)
 from helpers import init_git_repo
 
 
@@ -382,6 +390,137 @@ def test_fresh_child_gets_new_worktree(tmp_path: Path) -> None:
 
     assert child_payload["branch"] != parent_payload["branch"]
     assert child_payload["worktreePath"] != parent_payload["worktreePath"]
+
+
+def _write_handoff_worker(tmp_path: Path, *, target: str, marker_prefix: str) -> Path:
+    """A python worker that leaves a handoff sentinel pointing at ``target``.
+
+    It also drops a per-depth marker file so a test can count how many hops ran
+    on the (shared) worktree.
+    """
+    script = tmp_path / f"handoff_worker_{marker_prefix}.py"
+    script.write_text(
+        "import json, os, pathlib\n"
+        "root = pathlib.Path.cwd()\n"
+        "depth = os.environ.get('PATCHRELAY_HANDOFF_DEPTH', '0')\n"
+        f"(root / f'{marker_prefix}-ran-' + depth + '.txt').write_text('ran', encoding='utf-8')\n"
+        "sentinel_dir = root / '.patchrelay'\n"
+        "sentinel_dir.mkdir(exist_ok=True)\n"
+        "(sentinel_dir / 'handoff.json').write_text(\n"
+        f"    json.dumps({{'worker': {target!r}, 'instruction': 'continue the work please'}}),\n"
+        "    encoding='utf-8',\n"
+        ")\n"
+        "print('handoff written')\n",
+        encoding="utf-8",
+    )
+    return script
+
+
+def _write_handoff_worker(tmp_path: Path, *, target: str, marker_prefix: str) -> Path:
+    """Create a fake worker that edits the worktree then requests a handoff.
+
+    It writes a depth-keyed marker file (so the accumulated diff has content and
+    each hop is distinguishable) and drops a ``.patchrelay/handoff.json`` sentinel
+    pointing at ``target``. The worker's cwd is the task's worktree.
+    """
+    script = tmp_path / f"handoff_worker_{marker_prefix}.py"
+    script.write_text(
+        "import json, os, pathlib\n"
+        "depth = os.environ.get('PATCHRELAY_HANDOFF_DEPTH', '0')\n"
+        f"pathlib.Path(f'{marker_prefix}-hop-{{depth}}.txt').write_text('hop ' + depth, encoding='utf-8')\n"
+        "sentinel_dir = pathlib.Path('.patchrelay')\n"
+        "sentinel_dir.mkdir(exist_ok=True)\n"
+        "(sentinel_dir / 'handoff.json').write_text(\n"
+        f"    json.dumps({{'worker': {target!r}, 'instruction': 'continue the chain'}}),\n"
+        "    encoding='utf-8',\n"
+        ")\n"
+        "print('handoff worker done at depth', depth)\n",
+        encoding="utf-8",
+    )
+    return script
+
+
+def _find_child(client: TestClient, headers: dict[str, str], parent_id: str) -> dict:
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        tasks = client.get("/tasks", headers=headers).json()["tasks"]
+        for task in tasks:
+            if task.get("parentTaskId") == parent_id:
+                return task
+        time.sleep(0.02)
+    raise AssertionError(f"No child task appeared for parent {parent_id}")
+
+
+def test_worker_sentinel_triggers_handoff_to_next_worker(tmp_path: Path) -> None:
+    repo = init_git_repo(tmp_path / "repo")
+    worker = _write_handoff_worker(tmp_path, target="fake", marker_prefix="codex")
+    settings = Settings(
+        server=ServerConfig(token="test-token"),
+        repo=RepoConfig(path=repo, base_branch="main", state_dir=Path(".patchrelay-test")),
+        worker=WorkerConfig(codex_command=[sys.executable, str(worker)]),
+        tests={"default": ConfigTestProfile(command=["python", "-c", "print('tests ok')"])},
+    )
+    headers = {"Authorization": "Bearer test-token"}
+
+    with TestClient(create_app(settings)) as local_client:
+        parent = local_client.post(
+            "/message:send", json=task_request("scaffold it", worker="codex"), headers=headers
+        )
+        parent_id = parent.json()["taskId"]
+        parent_payload = wait_for_status(local_client, headers, parent_id, "handed_off")
+
+        child = _find_child(local_client, headers, parent_id)
+        child_payload = wait_for_status(local_client, headers, child["taskId"], "completed")
+
+    # Parent completed its hop by handing off; the child continued the chain.
+    assert parent_payload["status"] == "handed_off"
+    assert child_payload["worker"] == "fake"
+    assert child_payload["parentTaskId"] == parent_id
+    assert child_payload["handoffDepth"] == 1
+    # Shared worktree: the child ran where the parent left off (same branch).
+    assert child_payload["branch"] == parent_payload["branch"]
+    assert child_payload["worktreePath"] == parent_payload["worktreePath"]
+    # The consumed sentinel must not leak into the parent's diff.
+    assert ".patchrelay/handoff.json" not in parent_payload["artifacts"]["patchrelay.diff"]["content"]
+
+
+def test_handoff_depth_guard_stops_pingpong(tmp_path: Path) -> None:
+    repo = init_git_repo(tmp_path / "repo")
+    # A worker that always hands back to itself would loop forever without a guard.
+    worker = _write_handoff_worker(tmp_path, target="codex", marker_prefix="pingpong")
+    settings = Settings(
+        server=ServerConfig(token="test-token"),
+        repo=RepoConfig(path=repo, base_branch="main", state_dir=Path(".patchrelay-test")),
+        worker=WorkerConfig(codex_command=[sys.executable, str(worker)]),
+        tests={"default": ConfigTestProfile(command=["python", "-c", "print('tests ok')"])},
+        limits=LimitsConfig(max_handoff_depth=2),
+    )
+    headers = {"Authorization": "Bearer test-token"}
+
+    with TestClient(create_app(settings)) as local_client:
+        root = local_client.post(
+            "/message:send", json=task_request("start pingpong", worker="codex"), headers=headers
+        )
+        root_id = root.json()["taskId"]
+        wait_for_status(local_client, headers, root_id, "handed_off")
+
+        # Follow the chain until a task completes instead of handing off.
+        deadline = time.monotonic() + 15
+        terminal = None
+        while time.monotonic() < deadline:
+            tasks = local_client.get("/tasks", headers=headers).json()["tasks"]
+            terminal = next((t for t in tasks if t["status"] == "completed"), None)
+            if terminal is not None:
+                break
+            time.sleep(0.05)
+        assert terminal is not None, "chain never terminated"
+        all_tasks = local_client.get("/tasks", headers=headers).json()["tasks"]
+
+    # Depth is bounded: no task exceeds the configured max, and the deepest one
+    # completed normally rather than handing off again.
+    depths = [t["handoffDepth"] for t in all_tasks]
+    assert max(depths) == 2
+    assert terminal["handoffDepth"] == 2
 
 
 def test_incomplete_tasks_are_marked_failed_after_restart(tmp_path: Path) -> None:

@@ -48,6 +48,10 @@ class LimitsConfig(BaseModel):
     max_log_bytes: int = 1_048_576
     max_diff_bytes: int = 5_242_880
     task_timeout_seconds: int = 3_600
+    # Maximum number of handoff hops in a ping-pong chain. Each child task is one
+    # hop deeper than its parent; a handoff that would exceed this is refused so
+    # an A->B->A->B chain cannot loop forever.
+    max_handoff_depth: int = 4
 
 
 class Settings(BaseModel):
