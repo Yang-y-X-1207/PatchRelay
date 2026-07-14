@@ -7,7 +7,7 @@ import uuid
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -31,6 +31,11 @@ class TaskStatus(StrEnum):
 class PatchRelayMetadata(BaseModel):
     worker: WorkerName = "auto"
     testProfile: str = "default"
+    parentTaskId: str | None = None
+    # "shared" continues the handoff on the parent's worktree/branch so the next
+    # worker sees the previous worker's edits (the ping-pong relay case).
+    # "fresh" branches a new worktree from the base branch (independent work).
+    worktreeStrategy: Literal["shared", "fresh"] = "shared"
 
 
 class A2AMessagePart(BaseModel):
@@ -79,6 +84,9 @@ class TaskRecord(BaseModel):
     test_profile: str
     status: TaskStatus
     phase: str = "accepted"
+    parent_task_id: str | None = None
+    handoff_depth: int = 0
+    worktree_strategy: Literal["shared", "fresh"] = "shared"
     created_at: datetime
     updated_at: datetime
     started_at: datetime | None = None
@@ -99,6 +107,9 @@ class TaskRecord(BaseModel):
             "testProfile": self.test_profile,
             "status": self.status,
             "phase": self.phase,
+            "parentTaskId": self.parent_task_id,
+            "handoffDepth": self.handoff_depth,
+            "worktreeStrategy": self.worktree_strategy,
             "createdAt": self.created_at.isoformat(),
             "updatedAt": self.updated_at.isoformat(),
             "startedAt": self.started_at.isoformat() if self.started_at else None,
@@ -155,6 +166,7 @@ class TaskService:
     async def submit(self, request: SendMessageRequest) -> TaskRecord:
         instruction = extract_instruction(request)
         metadata = parse_patchrelay_metadata(request.metadata, self._settings)
+        parent = await self._resolve_parent(metadata.parentTaskId)
         now = utcnow()
         record = TaskRecord(
             id=uuid.uuid4().hex,
@@ -164,6 +176,9 @@ class TaskService:
             status=TaskStatus.SUBMITTED,
             created_at=now,
             updated_at=now,
+            parent_task_id=metadata.parentTaskId,
+            handoff_depth=(parent.handoff_depth + 1) if parent else 0,
+            worktree_strategy=metadata.worktreeStrategy,
         )
 
         async with self._lock:
@@ -177,6 +192,15 @@ class TaskService:
             await self._queue.put(record.id)
 
         return record
+
+    async def _resolve_parent(self, parent_task_id: str | None) -> TaskRecord | None:
+        if parent_task_id is None:
+            return None
+        async with self._lock:
+            parent = self._tasks.get(parent_task_id)
+        if parent is None:
+            raise TaskError(f"Unknown parentTaskId: {parent_task_id}")
+        return parent
 
     async def list_tasks(self) -> list[TaskRecord]:
         async with self._lock:
@@ -275,7 +299,7 @@ class TaskService:
             self._save_task(record)
 
         cancel_event = self._cancel_events[task_id]
-        workspace = await asyncio.to_thread(self._workspace_manager.create, task_id)
+        workspace = await asyncio.to_thread(self._provision_workspace, task_id)
         await self._record_workspace(task_id, workspace)
         if cancel_event.is_set():
             await self._finalize_canceled(
@@ -338,6 +362,27 @@ class TaskService:
             changed_files=changed_files,
             diff_text=diff_text,
         )
+
+    def _provision_workspace(self, task_id: str) -> Workspace:
+        """Create a fresh worktree, or attach to the parent's for shared handoff.
+
+        Runs in a worker thread (blocking git calls), so it reads the record
+        snapshot directly rather than under the async lock. A shared child with
+        a parent that has a live worktree continues on the parent's branch;
+        anything else (fresh strategy, no parent, or a parent whose worktree is
+        gone) falls back to creating a new worktree from the base branch.
+        """
+        record = self._tasks.get(task_id)
+        if record is not None and record.worktree_strategy == "shared" and record.parent_task_id:
+            parent = self._tasks.get(record.parent_task_id)
+            if (
+                parent is not None
+                and parent.branch is not None
+                and parent.worktree_path is not None
+                and parent.worktree_path.exists()
+            ):
+                return self._workspace_manager.attach(parent.branch, parent.worktree_path)
+        return self._workspace_manager.create(task_id)
 
     async def _record_workspace(self, task_id: str, workspace: Workspace) -> None:
         async with self._lock:

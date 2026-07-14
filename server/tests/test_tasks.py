@@ -8,18 +8,27 @@ from patchrelay.config import LimitsConfig, RepoConfig, ServerConfig, Settings, 
 from helpers import init_git_repo
 
 
-def task_request(instruction: str, worker: str = "auto", test_profile: str = "default") -> dict:
+def task_request(
+    instruction: str,
+    worker: str = "auto",
+    test_profile: str = "default",
+    parent_task_id: str | None = None,
+    worktree_strategy: str | None = None,
+) -> dict:
+    patchrelay: dict = {
+        "worker": worker,
+        "testProfile": test_profile,
+    }
+    if parent_task_id is not None:
+        patchrelay["parentTaskId"] = parent_task_id
+    if worktree_strategy is not None:
+        patchrelay["worktreeStrategy"] = worktree_strategy
     return {
         "message": {
             "role": "ROLE_USER",
             "parts": [{"text": instruction}],
         },
-        "metadata": {
-            "patchrelay": {
-                "worker": worker,
-                "testProfile": test_profile,
-            }
-        },
+        "metadata": {"patchrelay": patchrelay},
     }
 
 
@@ -295,6 +304,84 @@ def test_completed_tasks_are_restored_from_sqlite(tmp_path: Path) -> None:
     assert payload["status"] == "completed"
     assert payload["artifacts"]["patchrelay.summary"]["content"]["changedFiles"] == ["fake-change.txt"]
     assert any(event["phase"] == "queued" for event in payload["events"])
+
+
+def test_child_task_records_parent_and_depth(client: TestClient, auth_headers: dict[str, str]) -> None:
+    parent = client.post("/message:send", json=task_request("parent work"), headers=auth_headers)
+    parent_id = parent.json()["taskId"]
+    wait_for_status(client, auth_headers, parent_id, "completed")
+
+    child = client.post(
+        "/message:send",
+        json=task_request("child work", parent_task_id=parent_id),
+        headers=auth_headers,
+    )
+    child_payload = wait_for_status(client, auth_headers, child.json()["taskId"], "completed")
+
+    assert child_payload["parentTaskId"] == parent_id
+    assert child_payload["handoffDepth"] == 1
+    assert child_payload["worktreeStrategy"] == "shared"
+
+
+def test_submit_rejects_unknown_parent_task(client: TestClient, auth_headers: dict[str, str]) -> None:
+    response = client.post(
+        "/message:send",
+        json=task_request("orphan", parent_task_id="does-not-exist"),
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 400
+
+
+def test_shared_child_reuses_parent_worktree(tmp_path: Path) -> None:
+    repo = init_git_repo(tmp_path / "repo")
+    settings = Settings(
+        server=ServerConfig(token="test-token"),
+        repo=RepoConfig(path=repo, base_branch="main", state_dir=Path(".patchrelay-test")),
+        tests={"default": ConfigTestProfile(command=["python", "-c", "print('tests ok')"])},
+    )
+    headers = {"Authorization": "Bearer test-token"}
+
+    with TestClient(create_app(settings)) as local_client:
+        parent = local_client.post("/message:send", json=task_request("parent"), headers=headers)
+        parent_id = parent.json()["taskId"]
+        parent_payload = wait_for_status(local_client, headers, parent_id, "completed")
+
+        child = local_client.post(
+            "/message:send",
+            json=task_request("child", parent_task_id=parent_id, worktree_strategy="shared"),
+            headers=headers,
+        )
+        child_payload = wait_for_status(local_client, headers, child.json()["taskId"], "completed")
+
+    # Shared handoff continues on the parent's branch/worktree so edits accumulate.
+    assert child_payload["branch"] == parent_payload["branch"]
+    assert child_payload["worktreePath"] == parent_payload["worktreePath"]
+
+
+def test_fresh_child_gets_new_worktree(tmp_path: Path) -> None:
+    repo = init_git_repo(tmp_path / "repo")
+    settings = Settings(
+        server=ServerConfig(token="test-token"),
+        repo=RepoConfig(path=repo, base_branch="main", state_dir=Path(".patchrelay-test")),
+        tests={"default": ConfigTestProfile(command=["python", "-c", "print('tests ok')"])},
+    )
+    headers = {"Authorization": "Bearer test-token"}
+
+    with TestClient(create_app(settings)) as local_client:
+        parent = local_client.post("/message:send", json=task_request("parent"), headers=headers)
+        parent_id = parent.json()["taskId"]
+        parent_payload = wait_for_status(local_client, headers, parent_id, "completed")
+
+        child = local_client.post(
+            "/message:send",
+            json=task_request("child", parent_task_id=parent_id, worktree_strategy="fresh"),
+            headers=headers,
+        )
+        child_payload = wait_for_status(local_client, headers, child.json()["taskId"], "completed")
+
+    assert child_payload["branch"] != parent_payload["branch"]
+    assert child_payload["worktreePath"] != parent_payload["worktreePath"]
 
 
 def test_incomplete_tasks_are_marked_failed_after_restart(tmp_path: Path) -> None:

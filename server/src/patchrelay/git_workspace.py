@@ -45,6 +45,23 @@ class GitWorkspaceManager:
             base_branch=self.base_branch,
         )
 
+    def attach(self, branch: str, worktree_path: Path) -> Workspace:
+        """Reuse an existing worktree/branch instead of creating a new one.
+
+        Used for shared-worktree handoff: a child task continues editing the
+        parent's worktree so changes accumulate on the same branch. The final
+        diff therefore reflects the whole handoff chain, not just one worker.
+        """
+        self._ensure_repo()
+        if not worktree_path.exists():
+            raise GitWorkspaceError(f"Shared worktree path does not exist: {worktree_path}")
+        return Workspace(
+            repo_path=self.repo_path,
+            branch=branch,
+            worktree_path=worktree_path,
+            base_branch=self.base_branch,
+        )
+
     def validate(self) -> None:
         self._ensure_repo()
         self._git(["rev-parse", "--verify", self.base_branch])
