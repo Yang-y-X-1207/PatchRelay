@@ -12,6 +12,10 @@ worker:
   default: claude
   codex_command: codex
   claude_command: claude
+  # Prepend a short handoff protocol to each real worker's instruction so a
+  # headless claude/codex knows it may delegate the next step to another agent
+  # by writing .patchrelay/handoff.json. Set false to disable multi-agent relay.
+  enable_handoff: true
 
 tests:
   default:
@@ -21,3 +25,7 @@ limits:
   max_log_bytes: 1048576
   max_diff_bytes: 5242880
   task_timeout_seconds: 3600
+  # Maximum number of handoff hops in a ping-pong chain (A->B->A...). Each child
+  # task is one hop deeper than its parent; a handoff that would exceed this is
+  # refused and the task completes normally, so a relay chain cannot loop forever.
+  max_handoff_depth: 4
