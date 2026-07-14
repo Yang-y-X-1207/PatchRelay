@@ -1,10 +1,10 @@
 # PatchRelay 架构演进路线图
 
-**文档版本**: v1.1  
+**文档版本**: v1.2  
 **创建日期**: 2026-06-22  
-**更新日期**: 2026-06-28  
+**更新日期**: 2026-07-13  
 **维护者**: PatchRelay 架构组  
-**状态**: ✅ **Phase 1 已完成** | Phase 2 规划中
+**状态**: ✅ **Phase 1 已完成** | 🔄 **Phase 1.5 进行中** | Phase 2 规划中
 
 ---
 
@@ -13,6 +13,12 @@
 本文档描述 PatchRelay 从**本地部署**到**云端 SaaS** 的演进路线，以及相应的技术架构变化。
 
 **重要更新（2026-06-28）：Phase 1 MVP 已全部完成并通过生产级任务验证。**
+
+**重要更新（2026-07-13）：新增 Phase 1.5「多 Agent 互联与 Handoff」。**
+原路线图从「Phase 1 单机 MVP」直接跳到「Phase 2 云端 SaaS」，遗漏了当前实际
+正在推进的一段关键演进：让 OpenClaw、Claude Code、Codex 三端可以任意两两通信、
+互相委派子任务（handoff）。本次修订将这一层显式化为 Phase 1.5，使路线图与真实
+开发路径对齐。
 
 ---
 
@@ -25,7 +31,14 @@ Phase 1: 本地工具 (MVP) ✅ 已完成
   └─ 用户下载 PatchRelay 到本地机器
   └─ 单机运行，直接操作本地代码仓库
   └─ 支持串行任务执行（一次一个任务）
-  └─ 目标：10-50 并发任务（Phase 2）
+  └─ 单向链路：OpenClaw → worker（Claude Code / Codex）
+
+Phase 1.5: 多 Agent 互联与 Handoff 🔄 进行中
+  └─ 仍是本地单机，不引入云端
+  └─ 三端（OpenClaw / Claude Code / Codex）任意两两通信
+  └─ worker 执行中可把子任务委派给另一个 worker（handoff）
+  └─ 典型场景：Claude Code 做架构设计 → 委派 Codex 实现
+  └─ 目标：用户自选任意两个 Agent 协作
 
 Phase 2: 云端 SaaS 📋 规划中
   └─ 用户无需本地部署，直接使用云服务
@@ -119,6 +132,131 @@ Phase 2: 云端 SaaS 📋 规划中
 ⚠️ **资源限制** - 受限于本地机器性能  
 ⚠️ **团队协作** - 难以多人共享任务队列  
 ⚠️ **高可用** - 单点故障，机器关机服务停止  
+⚠️ **单向链路** - 只能 OpenClaw → worker，worker 之间无法互相委派  
+
+---
+
+## 🔗 Phase 1.5: 多 Agent 互联与 Handoff（🔄 进行中）
+
+### 目标
+
+在不引入云端的前提下，把当前的**单向链路**（OpenClaw → worker）扩展为
+**三端任意互联**：OpenClaw、Claude Code、Codex 中任意一个都可以作为发起方
+（Agent1），把任务或子任务委派给另一个（Agent2）。
+
+核心新增能力是 **Handoff（委派）**：一个 worker 在执行过程中，可以把一段
+子任务提交回 PatchRelay，由 PatchRelay 路由到另一个 worker 执行，结果再回流。
+
+### 从 Phase 1 到 Phase 1.5 的变化
+
+```
+Phase 1（单向）:
+  OpenClaw ──submit──> PatchRelay ──> worker（执行完即结束）
+
+Phase 1.5（互联 + handoff）:
+  任意 Agent1 ──submit──> PatchRelay ──> worker A
+                                          │
+                                          │ handoff（执行中委派子任务）
+                                          ▼
+                                       PatchRelay ──> worker B
+                                          │
+                                          ▼
+                                       结果回流到 worker A / 用户
+```
+
+### 链路进度追踪
+
+| 链路 | 类型 | 状态 |
+|------|------|------|
+| OpenClaw → Claude Code | 单向 | ✅ 已完成并验证 |
+| OpenClaw → Codex | 单向 | ✅ 已完成并验证（2026-07-13） |
+| Claude Code → Codex | Handoff | 🔄 设计中（下一步） |
+| Codex → Claude Code | Handoff | 📋 待办 |
+| 三端任意互联（用户自选） | Handoff | 📋 目标态 |
+
+### 典型协作场景
+
+```
+场景：Claude Code 负责架构设计，Codex 负责实现
+
+用户 → OpenClaw
+  → 委派 Claude Code：「设计用户认证模块的架构」
+     → Claude Code 产出架构方案（接口定义、模块划分、验收标准）
+     → Claude Code handoff → Codex：「按此架构实现各模块」
+        → Codex 逐模块实现 + 跑测试
+        → 结果回流
+  → 汇总给用户：架构 + 实现 + 测试结果
+```
+
+### 需要解决的架构缺口
+
+Phase 1 的 worker 只接收一个 `instruction` 字符串，运行完就结束，**没有**
+「执行中途再提交任务给另一个 Agent」的通道。要实现 handoff，需要补齐三件事：
+
+| # | 缺口 | 当前状态 | Phase 1.5 需要做的 |
+|---|------|---------|-------------------|
+| 1 | worker 能接入 PatchRelay | ❌ workers.py 未向子进程传入 server URL / token | 通过环境变量或 prompt 注入接入信息 |
+| 2 | 任务间上下文 / 产物传递 | ❌ 每个任务独立，无父子关系 | 引入 `parentTaskId` + 产物引用 |
+| 3 | 串行 handoff 控制 | ❌ 无依赖 / handoff 状态机 | 支持 handoff 任务类型与依赖编排 |
+
+### 设计要点
+
+**1. 任务模型扩展（`parentTaskId` + handoff 类型）**
+
+```python
+# tasks.py — 概念示意
+class PatchRelayMetadata(BaseModel):
+    worker: WorkerName = "auto"
+    testProfile: str = "default"
+    parentTaskId: str | None = None      # 新增：标记 handoff 的父任务
+    handoffFrom: WorkerName | None = None # 新增：由哪个 worker 发起
+    inheritArtifacts: bool = False       # 新增：是否继承父任务产物
+```
+
+**2. worker 侧接入信息注入（环境变量方案）**
+
+```python
+# workers.py — 概念示意
+# 给 worker 子进程注入 PatchRelay 接入信息，使其能提交 handoff 子任务
+env = {
+    **os.environ,
+    "PATCHRELAY_URL": f"http://{settings.server.host}:{settings.server.port}",
+    "PATCHRELAY_TOKEN": settings.server.token,
+    "PATCHRELAY_PARENT_TASK_ID": task_id,
+}
+```
+
+worker 的 prompt 里追加 handoff 说明：告诉它「若某段工作更适合另一个 worker，
+可调用 `POST {PATCHRELAY_URL}/message:send` 提交 handoff 子任务，
+并带上 `parentTaskId`」。
+
+**3. Handoff 状态机与 worktree 共享策略**
+
+- **共享 worktree**：handoff 子任务复用父任务的 worktree（改动累加，适合
+  「设计→实现」在同一分支演进）。
+- **独立 worktree + 产物引用**：子任务开新 worktree，通过产物（diff / 文件）
+  显式传入（适合并行探索、隔离验证）。
+- Phase 1.5 先实现**共享 worktree 的串行 handoff**（最贴近「架构→实现」场景），
+  独立 worktree 作为后续增强。
+
+**4. 防循环与深度限制**
+
+handoff 可能形成 A→B→A 的环。需要：
+- `handoffDepth` 计数，超过阈值（如 3）拒绝新 handoff。
+- 记录 handoff 链路（`parentTaskId` 溯源），在 TUI / API 可视化。
+
+### 与云端 Phase 2 的关系
+
+Phase 1.5 的任务模型（`parentTaskId`、handoff 状态机、产物引用）是 Phase 2
+多 worker 池调度的**前置基础**——云端的分布式任务编排本质上是 handoff 机制在
+多实例、多租户下的放大。因此 Phase 1.5 不是临时补丁，而是 Phase 2 任务编排层
+的本地原型。
+
+### 限制
+
+⚠️ **仍是单机** - handoff 在同一台机器的串行队列内完成  
+⚠️ **串行为主** - MVP 阶段 handoff 子任务串行执行，不并发  
+⚠️ **安全边界** - worker 拿到 PatchRelay token 后可提交任意任务，需限制 handoff 深度与命令范围  
 
 ---
 
@@ -531,7 +669,14 @@ Q2 2026: Phase 1 优化
 ├─ Week 5-8:   性能优化、Bug 修复
 └─ Week 9-12:  收集用户反馈
 
-Q3 2026: Phase 2 准备
+Q3 2026: Phase 1.5 - 多 Agent 互联与 Handoff 🔄
+├─ Week 1:     OpenClaw → Codex 单向链路打通 ✅（2026-07-13）
+├─ Week 2-3:   任务模型扩展（parentTaskId / handoff 类型）
+├─ Week 4-5:   worker 接入信息注入 + Claude Code → Codex handoff
+├─ Week 6-7:   Codex → Claude Code handoff + 防循环
+└─ Week 8:     三端任意互联联调、用户自选 Agent
+
+Q3-Q4 2026: Phase 2 准备
 ├─ Week 1-4:   Java Gateway POC
 ├─ Week 5-8:   Python 容器化改造
 ├─ Week 9-10:  Local Agent 开发
@@ -555,9 +700,11 @@ Q1 2027: Phase 2 GA
 |--------|------|---------|
 | 本地 MVP 发布 | 2026-02 | 支持本地任务执行 |
 | TUI CLI 完成 | 2026-04 | 实时任务监控 |
-| Java Gateway 完成 | 2026-08 | 支持 1000 QPS |
-| 云端 Beta | 2026-10 | 10 个企业客户内测 |
-| 云端 GA | 2027-01 | 支持 1000+ 用户 |
+| OpenClaw → Codex 链路 | 2026-07 | ✅ 已验证：Codex worker 端到端成功 |
+| 三端任意互联 | 2026-09 | Claude Code / Codex 可互相 handoff |
+| Java Gateway 完成 | 2026-11 | 支持 1000 QPS |
+| 云端 Beta | 2027-01 | 10 个企业客户内测 |
+| 云端 GA | 2027-04 | 支持 1000+ 用户 |
 
 ---
 
@@ -643,14 +790,19 @@ Q1 2027: Phase 2 GA
 
 ### 核心策略
 
-**"本地先行，云端扩展"**
+**"本地先行，多端互联，云端扩展"**
 
 1. **Phase 1（本地）**: 
    - 快速验证产品概念
    - 零运营成本
    - 积累用户反馈
 
-2. **Phase 2（云端）**:
+2. **Phase 1.5（多 Agent 互联）**:
+   - 三端任意互联，worker 间 handoff
+   - 沉淀任务编排模型（parentTaskId / handoff 状态机）
+   - 为 Phase 2 云端多 worker 调度打前置基础
+
+3. **Phase 2（云端）**:
    - Java Gateway 处理高并发
    - Python Pool 保留现有逻辑
    - Local Agent 保护代码安全
@@ -686,7 +838,7 @@ Q1 2027: Phase 2 GA
 
 **文档所有者**: 架构组  
 **审阅周期**: 季度  
-**下次审阅**: 2026-09-22
+**下次审阅**: 2026-10-13
 
 ---
 
