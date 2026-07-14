@@ -550,6 +550,53 @@ def test_build_worker_instruction_omits_protocol_at_max_depth() -> None:
     assert result == "finish it"
 
 
+def test_process_worker_receives_staged_brief_file_not_raw_argv(tmp_path: Path) -> None:
+    # Real workers run through a Windows .CMD shim that truncates argv at the
+    # first newline. So the multi-line brief must be staged to a file and the
+    # worker handed only a short pointer. This worker records both what it got
+    # on argv and what the staged file contained.
+    repo = init_git_repo(tmp_path / "repo")
+    argv_dump = tmp_path / "argv.txt"
+    brief_dump = tmp_path / "brief.txt"
+    worker = tmp_path / "recording_worker.py"
+    worker.write_text(
+        "import sys, pathlib\n"
+        f"pathlib.Path({str(argv_dump)!r}).write_text(' '.join(sys.argv[1:]), encoding='utf-8')\n"
+        "brief = pathlib.Path('.patchrelay/task.md')\n"
+        f"pathlib.Path({str(brief_dump)!r}).write_text(\n"
+        "    brief.read_text(encoding='utf-8') if brief.exists() else '<<MISSING>>',\n"
+        "    encoding='utf-8',\n"
+        ")\n"
+        "print('recorded')\n",
+        encoding="utf-8",
+    )
+    settings = Settings(
+        server=ServerConfig(token="test-token"),
+        repo=RepoConfig(path=repo, base_branch="main", state_dir=Path(".patchrelay-test")),
+        worker=WorkerConfig(codex_command=[sys.executable, str(worker)], enable_handoff=True),
+        tests={"default": ConfigTestProfile(command=["python", "-c", "print('tests ok')"])},
+    )
+    headers = {"Authorization": "Bearer test-token"}
+
+    with TestClient(create_app(settings)) as local_client:
+        response = local_client.post(
+            "/message:send", json=task_request("implement the feature", worker="codex"), headers=headers
+        )
+        task_id = response.json()["taskId"]
+        payload = wait_for_status(local_client, headers, task_id, "completed")
+
+    argv_received = argv_dump.read_text(encoding="utf-8")
+    staged_brief = brief_dump.read_text(encoding="utf-8")
+    # The worker got a short single-line pointer, not the multi-line brief.
+    assert "task.md" in argv_received
+    assert "\n" not in argv_received
+    # The staged file held the real instruction plus the handoff protocol.
+    assert "implement the feature" in staged_brief
+    assert "handoff protocol" in staged_brief.lower()
+    # The staged file was cleaned up and never leaked into the diff.
+    assert ".patchrelay/task.md" not in payload["artifacts"]["patchrelay.diff"]["content"]
+
+
 def test_incomplete_tasks_are_marked_failed_after_restart(tmp_path: Path) -> None:
     repo = init_git_repo(tmp_path / "repo")
     settings = Settings(

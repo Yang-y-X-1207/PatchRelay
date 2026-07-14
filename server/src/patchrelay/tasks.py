@@ -16,7 +16,7 @@ from patchrelay.config import Settings
 from patchrelay.git_workspace import GitWorkspaceManager, Workspace
 from patchrelay.task_store import SQLiteTaskStore
 from patchrelay.test_runner import TestRunner, TestRunResult
-from patchrelay.workers import WorkerName, WorkerRegistry, WorkerResult
+from patchrelay.workers import ProcessWorkerAdapter, WorkerName, WorkerRegistry, WorkerResult
 
 
 class TaskStatus(StrEnum):
@@ -452,13 +452,29 @@ class TaskService:
             self._save_task(record)
 
         worker_env = self._build_worker_env(record)
-        instruction = build_worker_instruction(
+        full_brief = build_worker_instruction(
             record.instruction,
             enabled=self._settings.worker.enable_handoff,
             depth=record.handoff_depth,
             max_depth=self._settings.limits.max_handoff_depth,
         )
+        # A headless claude/codex on Windows is launched via a .CMD shim, and
+        # cmd.exe truncates any argument at the first newline (and mangles
+        # cmd-special characters). Passing a multi-line brief on argv silently
+        # drops everything after line 1. So for real process workers we stage
+        # the full brief to a file in the worktree and hand the worker only a
+        # short, single-line pointer to it. The fake worker keeps receiving the
+        # instruction directly (cheap, and its tests assert on argv).
+        if isinstance(adapter, ProcessWorkerAdapter):
+            instruction = await asyncio.to_thread(
+                self._stage_instruction_file, worktree_path, full_brief
+            )
+        else:
+            instruction = full_brief
         result = await adapter.run(instruction, worktree_path, cancel_event, worker_env)
+        # Remove the staged brief so it never leaks into the task's diff.
+        if isinstance(adapter, ProcessWorkerAdapter):
+            await asyncio.to_thread(self._remove_instruction_file, worktree_path)
 
         async with self._lock:
             record = self._tasks.get(task_id)
@@ -475,6 +491,31 @@ class TaskService:
             record.updated_at = utcnow()
             self._save_task(record)
         return result
+
+    # Relative path (inside the worktree) of the staged task brief.
+    _INSTRUCTION_REL_PATH = ".patchrelay/task.md"
+
+    def _stage_instruction_file(self, worktree_path: Path, brief: str) -> str:
+        """Write the full brief to a file and return a single-line argv pointer.
+
+        Real workers are launched through a Windows .CMD shim; cmd.exe cuts an
+        argument at the first newline, so a multi-line brief passed on argv
+        loses everything after line 1. Writing the brief to a file and passing
+        only a short pointer sidesteps the shim entirely and works for any
+        instruction length or content.
+        """
+        target = worktree_path / self._INSTRUCTION_REL_PATH
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(brief, encoding="utf-8")
+        return (
+            f"Your complete task brief is in the file {self._INSTRUCTION_REL_PATH} "
+            "at the root of this repository. Read that file first, then carry out "
+            "everything it describes."
+        )
+
+    def _remove_instruction_file(self, worktree_path: Path) -> None:
+        with contextlib.suppress(OSError):
+            (worktree_path / self._INSTRUCTION_REL_PATH).unlink()
 
     def _build_worker_env(self, record: TaskRecord) -> dict[str, str]:
         """Context a headless worker needs to know it runs inside PatchRelay.
