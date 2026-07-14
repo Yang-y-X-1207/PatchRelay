@@ -123,17 +123,24 @@ $ServerDir = $PSScriptRoot
 # Ensure we're in the right directory
 Set-Location $ServerDir
 
-# Read token from config
+# Read token from config. Never hard-code a real token here — that would leak a
+# secret into version control. If the config is missing or has no token, stop
+# and tell the user to run setup rather than falling back to a baked-in value.
 Write-Host "Reading configuration..." -ForegroundColor Yellow
-$token = "UEbjEGJaLR_UwEeHXf4PGAoTyzLIDJttXD2Ma6kt6JU"
+$token = $null
 if (Test-Path ".\patchrelay.yaml") {
     $configContent = Get-Content ".\patchrelay.yaml" -Raw
     if ($configContent -match 'token:\s*(.+)') {
         $token = $Matches[1].Trim()
     }
 }
+if ([string]::IsNullOrWhiteSpace($token)) {
+    Write-Host "No server.token found in patchrelay.yaml." -ForegroundColor Red
+    Write-Host "Run: uv run patchrelay setup --config .\patchrelay.yaml --yes" -ForegroundColor Yellow
+    exit 1
+}
 
-Write-Host "Token: $token" -ForegroundColor Green
+Write-Host "Token: (loaded from patchrelay.yaml)" -ForegroundColor Green
 Write-Host ""
 
 # Read the OpenClaw gateway endpoint from its own config so the gateway we
