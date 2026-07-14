@@ -597,6 +597,37 @@ def test_process_worker_receives_staged_brief_file_not_raw_argv(tmp_path: Path) 
     assert ".patchrelay/task.md" not in payload["artifacts"]["patchrelay.diff"]["content"]
 
 
+def test_timed_out_worker_with_changes_preserves_diff(tmp_path: Path) -> None:
+    repo = init_git_repo(tmp_path / "repo")
+    # A worker that writes a file, then hangs past the worker timeout.
+    worker = tmp_path / "slow_edit_worker.py"
+    worker.write_text(
+        "import pathlib, time\n"
+        "pathlib.Path('slow.txt').write_text('partial work', encoding='utf-8')\n"
+        "time.sleep(60)\n",
+        encoding="utf-8",
+    )
+    settings = Settings(
+        server=ServerConfig(token="test-token"),
+        repo=RepoConfig(path=repo, base_branch="main", state_dir=Path(".patchrelay-test")),
+        worker=WorkerConfig(default="codex", codex_command=[sys.executable, str(worker), "exec"]),
+        tests={"default": ConfigTestProfile(command=["python", "-c", "print('tests ok')"])},
+        limits=LimitsConfig(worker_timeout_seconds=1),
+    )
+    headers = {"Authorization": "Bearer test-token"}
+
+    with TestClient(create_app(settings)) as local_client:
+        response = local_client.post("/message:send", json=task_request("slow edit", worker="codex"), headers=headers)
+        task_id = response.json()["taskId"]
+        payload = wait_for_status(local_client, headers, task_id, "timed_out")
+
+    # The worker stalled, but its partial change is not thrown away.
+    assert payload["status"] == "timed_out"
+    assert payload["artifacts"]["patchrelay.summary"]["content"]["changedFiles"] == ["slow.txt"]
+    assert "slow.txt" in payload["artifacts"]["patchrelay.diff"]["content"]
+    assert "diff preserved" in payload["error"]
+
+
 def test_incomplete_tasks_are_marked_failed_after_restart(tmp_path: Path) -> None:
     repo = init_git_repo(tmp_path / "repo")
     settings = Settings(

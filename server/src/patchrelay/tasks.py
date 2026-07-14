@@ -27,6 +27,7 @@ class TaskStatus(StrEnum):
     FAILED = "failed"
     CANCELED = "canceled"
     HANDED_OFF = "handed_off"
+    TIMED_OUT = "timed_out"
 
 
 class PatchRelayMetadata(BaseModel):
@@ -360,6 +361,9 @@ class TaskService:
         if cancel_event.is_set():
             await self._finalize_canceled(task_id, workspace.worktree_path, worker_result)
             return
+        if worker_result.timed_out:
+            await self._finalize_timed_out(task_id, workspace.worktree_path, worker_result)
+            return
         if worker_result.failed:
             await self._finalize_failed_after_worker(task_id, workspace.worktree_path, worker_result)
             return
@@ -606,6 +610,61 @@ class TaskService:
                 changed_files=changed_files,
                 diff_text=diff_text,
                 test_result=skipped_tests,
+                worker_result=worker_result,
+                exit_code=worker_result.exit_code,
+            )
+            self._save_task(record)
+
+    async def _finalize_timed_out(
+        self,
+        task_id: str,
+        worktree_path: Path,
+        worker_result: WorkerResult,
+    ) -> None:
+        """Handle a worker that hit its wall-clock ceiling.
+
+        A timeout is not the same as a crash: the worker may have already
+        written correct changes before it stalled (e.g. an occasional provider
+        hang). So we always preserve the diff, and when the worker left changes
+        behind we still run the test suite to judge them — the task lands in the
+        soft ``timed_out`` state rather than ``failed``, so its artifacts are not
+        thrown away. Only a timeout that produced nothing is effectively a
+        failure.
+        """
+        changed_files = await asyncio.to_thread(self._workspace_manager.collect_changed_files, worktree_path)
+        diff_text = await asyncio.to_thread(self._workspace_manager.collect_diff, worktree_path)
+        if changed_files:
+            test_result = await self._run_tests(task_id, worktree_path)
+        else:
+            test_result = TestRunResult(
+                profile="skipped",
+                command=[],
+                stdout="",
+                stderr="Tests skipped: worker timed out without producing changes.",
+                exit_code=1,
+                duration_seconds=0,
+            )
+        async with self._lock:
+            record = self._tasks.get(task_id)
+            if record is None or record.status == TaskStatus.CANCELED:
+                return
+            record.status = TaskStatus.TIMED_OUT
+            record.phase = "timed_out"
+            if changed_files:
+                record.error = (
+                    f"Worker '{worker_result.worker}' timed out but left changes; "
+                    "diff preserved for review."
+                )
+            else:
+                record.error = f"Worker '{worker_result.worker}' timed out without producing any changes."
+            record.completed_at = utcnow()
+            record.updated_at = record.completed_at
+            append_event(record, "timed_out", record.error, severity="warning", status=record.status)
+            self._attach_artifacts(
+                record,
+                changed_files=changed_files,
+                diff_text=diff_text,
+                test_result=test_result,
                 worker_result=worker_result,
                 exit_code=worker_result.exit_code,
             )

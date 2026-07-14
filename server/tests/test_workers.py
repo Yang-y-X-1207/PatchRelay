@@ -28,7 +28,7 @@ async def test_codex_worker_uses_configured_command(tmp_path: Path) -> None:
     command = create_python_worker(tmp_path, "codex-out")
     settings = Settings(
         worker=WorkerConfig(default="codex", codex_command=[sys.executable, str(command)]),
-        limits=LimitsConfig(task_timeout_seconds=5),
+        limits=LimitsConfig(worker_timeout_seconds=5),
     )
 
     result = await WorkerRegistry(settings).select("codex").run("hello", tmp_path, asyncio.Event())
@@ -43,7 +43,7 @@ async def test_claude_worker_uses_configured_command(tmp_path: Path) -> None:
     command = create_python_worker(tmp_path, "claude-out")
     settings = Settings(
         worker=WorkerConfig(default="claude", claude_command=[sys.executable, str(command)]),
-        limits=LimitsConfig(task_timeout_seconds=5),
+        limits=LimitsConfig(worker_timeout_seconds=5),
     )
 
     result = await WorkerRegistry(settings).select("claude").run("hello", tmp_path, asyncio.Event())
@@ -116,6 +116,21 @@ async def test_process_worker_can_be_canceled(tmp_path: Path) -> None:
     assert result.canceled is True
     assert result.exit_code == 130
     assert not psutil.pid_exists(child_pid)
+
+
+async def test_process_worker_timeout_sets_timed_out_flag(tmp_path: Path) -> None:
+    script = tmp_path / "slow_worker.py"
+    script.write_text("import time\ntime.sleep(30)\n", encoding="utf-8")
+    adapter = ProcessWorkerAdapter("test", [sys.executable, str(script)], timeout_seconds=1)
+
+    result = await asyncio.wait_for(adapter.run("ignored", tmp_path, asyncio.Event()), timeout=10)
+
+    # A timeout is distinct from a cancel and from a clean failure: it carries the
+    # 124 code AND the timed_out flag, so the task layer can preserve any diff.
+    assert result.timed_out is True
+    assert result.canceled is False
+    assert result.exit_code == 124
+    assert "timed out" in result.stderr
 
 
 def create_python_worker(tmp_path: Path, label: str) -> Path:

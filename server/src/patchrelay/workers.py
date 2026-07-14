@@ -26,6 +26,7 @@ class WorkerResult:
     stderr: str
     exit_code: int
     canceled: bool = False
+    timed_out: bool = False
 
     @property
     def failed(self) -> bool:
@@ -157,6 +158,7 @@ class ProcessWorkerAdapter:
                         stdout="".join(stdout_chunks),
                         stderr=("".join(stderr_chunks) + f"\nWorker timed out after {self._timeout_seconds} seconds.").strip(),
                         exit_code=124,
+                        timed_out=True,
                     )
                 time.sleep(0.05)
 
@@ -194,7 +196,7 @@ class WorkerRegistry:
                     # Without this flag Codex blocks forever waiting for user input.
                     "--dangerously-bypass-approvals-and-sandbox",
                 ],
-                self._settings.limits.task_timeout_seconds,
+                self._settings.limits.worker_timeout_seconds,
             )
         if selected == "claude":
             return ProcessWorkerAdapter(
@@ -208,7 +210,7 @@ class WorkerRegistry:
                     "--disable-slash-commands",
                     "--no-session-persistence",
                 ],
-                self._settings.limits.task_timeout_seconds,
+                self._settings.limits.worker_timeout_seconds,
             )
         raise ValueError(f"Unsupported worker: {selected}")
 

@@ -52,6 +52,11 @@ class LimitsConfig(BaseModel):
     max_log_bytes: int = 1_048_576
     max_diff_bytes: int = 5_242_880
     task_timeout_seconds: int = 3_600
+    # Per-worker wall-clock ceiling, separate from (and normally shorter than)
+    # task_timeout_seconds. A single worker invocation that stalls — e.g. an
+    # occasional provider hang under high reasoning effort — is killed after this
+    # instead of burning the whole task budget. Tests still run afterwards.
+    worker_timeout_seconds: int = 1_800
     # Maximum number of handoff hops in a ping-pong chain. Each child task is one
     # hop deeper than its parent; a handoff that would exceed this is refused so
     # an A->B->A->B chain cannot loop forever.
