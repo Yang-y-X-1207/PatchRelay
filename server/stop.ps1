@@ -131,5 +131,5 @@ if ($stopped -gt 0) {
     Write-Host "================================================" -ForegroundColor Yellow
 }
 Write-Host ""
-Write-Host "To restart: .\start.ps1" -ForegroundColor Gray
+Write-Host "To restart: .\launch.ps1" -ForegroundColor Gray
 Write-Host ""
