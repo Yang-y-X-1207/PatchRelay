@@ -523,6 +523,33 @@ def test_handoff_depth_guard_stops_pingpong(tmp_path: Path) -> None:
     assert terminal["handoffDepth"] == 2
 
 
+def test_build_worker_instruction_injects_protocol_when_enabled() -> None:
+    from patchrelay.tasks import build_worker_instruction
+
+    result = build_worker_instruction("do the work", enabled=True, depth=0, max_depth=4)
+
+    assert "do the work" in result
+    assert ".patchrelay/handoff.json" in result
+    assert "budget remaining: 4 hop(s)" in result
+
+
+def test_build_worker_instruction_omits_protocol_when_disabled() -> None:
+    from patchrelay.tasks import build_worker_instruction
+
+    result = build_worker_instruction("do the work", enabled=False, depth=0, max_depth=4)
+
+    assert result == "do the work"
+
+
+def test_build_worker_instruction_omits_protocol_at_max_depth() -> None:
+    from patchrelay.tasks import build_worker_instruction
+
+    # The last worker in the chain has no budget to delegate; it just finishes.
+    result = build_worker_instruction("finish it", enabled=True, depth=4, max_depth=4)
+
+    assert result == "finish it"
+
+
 def test_incomplete_tasks_are_marked_failed_after_restart(tmp_path: Path) -> None:
     repo = init_git_repo(tmp_path / "repo")
     settings = Settings(

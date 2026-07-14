@@ -452,7 +452,13 @@ class TaskService:
             self._save_task(record)
 
         worker_env = self._build_worker_env(record)
-        result = await adapter.run(record.instruction, worktree_path, cancel_event, worker_env)
+        instruction = build_worker_instruction(
+            record.instruction,
+            enabled=self._settings.worker.enable_handoff,
+            depth=record.handoff_depth,
+            max_depth=self._settings.limits.max_handoff_depth,
+        )
+        result = await adapter.run(instruction, worktree_path, cancel_event, worker_env)
 
         async with self._lock:
             record = self._tasks.get(task_id)
@@ -844,6 +850,49 @@ def parse_patchrelay_metadata(metadata: dict[str, Any], settings: Settings) -> P
     if parsed.testProfile not in settings.tests:
         raise TaskError(f"Unknown testProfile: {parsed.testProfile}")
     return parsed
+
+
+def build_worker_instruction(
+    instruction: str,
+    *,
+    enabled: bool,
+    depth: int,
+    max_depth: int,
+) -> str:
+    """Prepend the handoff protocol so a headless worker knows how to delegate.
+
+    A worker like ``claude -p`` or ``codex exec`` has no way to discover the
+    PatchRelay handoff mechanism on its own. When handoff is enabled and the
+    chain still has budget, we tell the worker — in its own prompt — that it may
+    pass the task to another worker by writing a ``.patchrelay/handoff.json``
+    sentinel at the repository root. If it writes nothing, the task finishes
+    normally (tests run). When the depth budget is exhausted we omit the
+    protocol entirely so the final worker just completes the work.
+
+    Kept free of the fake worker's trigger words so it never changes fake-worker
+    behavior in tests.
+    """
+    if not enabled or depth >= max_depth:
+        return instruction
+    protocol = (
+        "PatchRelay handoff protocol (optional):\n"
+        "You are running inside a PatchRelay git worktree. If, after doing your "
+        "part, the task should continue with a different coding agent, you may "
+        "delegate by writing a file at .patchrelay/handoff.json in the repo root "
+        "with this exact JSON shape:\n"
+        '  {"worker": "codex" | "claude", "instruction": "<clear next-step brief>"}\n'
+        "Rules:\n"
+        "- Write the sentinel only when a genuine next step for another agent "
+        "remains. Leave your own edits on disk; the next agent continues on the "
+        "same branch and sees them.\n"
+        "- Write nothing if the work is complete — the task will finish and its "
+        "tests will run.\n"
+        "- Give the next agent a specific, self-contained brief in "
+        '"instruction"; it does not share your conversation.\n'
+        f"- Delegation budget remaining: {max_depth - depth} hop(s).\n"
+        "----- TASK -----\n"
+    )
+    return protocol + instruction
 
 
 def mark_canceled(record: TaskRecord, message: str) -> None:

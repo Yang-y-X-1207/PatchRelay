@@ -31,6 +31,10 @@ class WorkerConfig(BaseModel):
     default: Literal["auto", "codex", "claude", "fake"] = "fake"
     codex_command: str | list[str] = "codex"
     claude_command: str | list[str] = "claude"
+    # When true, PatchRelay prepends a short handoff protocol preamble to each
+    # real worker's instruction so a headless claude/codex knows how to delegate
+    # the next step (write .patchrelay/handoff.json). The fake worker ignores it.
+    enable_handoff: bool = True
 
 
 class TestProfile(BaseModel):
