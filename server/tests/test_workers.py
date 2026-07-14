@@ -57,6 +57,31 @@ async def test_claude_worker_uses_configured_command(tmp_path: Path) -> None:
     ) in result.stdout
 
 
+async def test_process_worker_injects_env(tmp_path: Path) -> None:
+    script = tmp_path / "env_worker.py"
+    script.write_text(
+        "import os, sys\n"
+        "print('URL', os.environ.get('PATCHRELAY_URL', ''))\n"
+        "print('TASK', os.environ.get('PATCHRELAY_TASK_ID', ''))\n"
+        "print('PATH_PRESENT', bool(os.environ.get('PATH')))\n",
+        encoding="utf-8",
+    )
+    adapter = ProcessWorkerAdapter("test", [sys.executable, str(script)], timeout_seconds=5)
+
+    result = await adapter.run(
+        "ignored",
+        tmp_path,
+        asyncio.Event(),
+        {"PATCHRELAY_URL": "http://127.0.0.1:8787", "PATCHRELAY_TASK_ID": "task-123"},
+    )
+
+    assert result.exit_code == 0
+    assert "URL http://127.0.0.1:8787" in result.stdout
+    assert "TASK task-123" in result.stdout
+    # Injected env is layered on top of the inherited environment, not a replacement.
+    assert "PATH_PRESENT True" in result.stdout
+
+
 def test_resolve_command_path_uses_path_shim(monkeypatch) -> None:
     monkeypatch.setattr("patchrelay.workers.shutil.which", lambda executable: f"C:/tools/{executable}.CMD")
 

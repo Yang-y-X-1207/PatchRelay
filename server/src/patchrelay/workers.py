@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import shutil
 import subprocess
 import threading
@@ -34,14 +35,26 @@ class WorkerResult:
 class WorkerAdapter(Protocol):
     name: str
 
-    async def run(self, instruction: str, cwd: Path, cancel_event: asyncio.Event) -> WorkerResult:
+    async def run(
+        self,
+        instruction: str,
+        cwd: Path,
+        cancel_event: asyncio.Event,
+        env: dict[str, str] | None = None,
+    ) -> WorkerResult:
         pass
 
 
 class FakeWorkerAdapter:
     name = "fake"
 
-    async def run(self, instruction: str, cwd: Path, cancel_event: asyncio.Event) -> WorkerResult:
+    async def run(
+        self,
+        instruction: str,
+        cwd: Path,
+        cancel_event: asyncio.Event,
+        env: dict[str, str] | None = None,
+    ) -> WorkerResult:
         sleep_seconds = 1.0 if "sleep" in instruction.lower() else 0.05
         try:
             await asyncio.wait_for(cancel_event.wait(), timeout=sleep_seconds)
@@ -66,15 +79,35 @@ class ProcessWorkerAdapter:
         self._command = resolve_command_path(command)
         self._timeout_seconds = timeout_seconds
 
-    async def run(self, instruction: str, cwd: Path, cancel_event: asyncio.Event) -> WorkerResult:
-        return await asyncio.to_thread(self._run_blocking, instruction, cwd, cancel_event)
+    async def run(
+        self,
+        instruction: str,
+        cwd: Path,
+        cancel_event: asyncio.Event,
+        env: dict[str, str] | None = None,
+    ) -> WorkerResult:
+        return await asyncio.to_thread(self._run_blocking, instruction, cwd, cancel_event, env)
 
-    def _run_blocking(self, instruction: str, cwd: Path, cancel_event: asyncio.Event) -> WorkerResult:
+    def _run_blocking(
+        self,
+        instruction: str,
+        cwd: Path,
+        cancel_event: asyncio.Event,
+        env: dict[str, str] | None = None,
+    ) -> WorkerResult:
         command = [*self._command, instruction]
+        # Start from the parent environment so the worker keeps PATH etc., then
+        # layer in any PatchRelay context vars (URL/token/task id/depth) so the
+        # worker knows it is running inside PatchRelay and can request a handoff.
+        process_env = None
+        if env:
+            process_env = os.environ.copy()
+            process_env.update(env)
         try:
             process = subprocess.Popen(
                 command,
                 cwd=str(cwd),
+                env=process_env,
                 stdin=subprocess.DEVNULL,  # close stdin so workers like Codex don't block waiting for input
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,

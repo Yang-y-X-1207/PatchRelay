@@ -363,7 +363,8 @@ class TaskService:
             record.updated_at = utcnow()
             self._save_task(record)
 
-        result = await adapter.run(record.instruction, worktree_path, cancel_event)
+        worker_env = self._build_worker_env(record)
+        result = await adapter.run(record.instruction, worktree_path, cancel_event, worker_env)
 
         async with self._lock:
             record = self._tasks.get(task_id)
@@ -380,6 +381,27 @@ class TaskService:
             record.updated_at = utcnow()
             self._save_task(record)
         return result
+
+    def _build_worker_env(self, record: TaskRecord) -> dict[str, str]:
+        """Context a headless worker needs to know it runs inside PatchRelay.
+
+        Injected into the worker subprocess so it can locate the server and
+        request a handoff (e.g. by writing a handoff sentinel keyed to its own
+        task). Values are always strings; optional context is omitted when
+        absent rather than passed empty.
+        """
+        server = self._settings.server
+        env: dict[str, str] = {
+            "PATCHRELAY_URL": f"http://{server.host}:{server.port}",
+            "PATCHRELAY_TOKEN": server.token,
+            "PATCHRELAY_TASK_ID": record.id,
+            "PATCHRELAY_WORKER": record.worker,
+        }
+        parent_task_id = getattr(record, "parent_task_id", None)
+        if parent_task_id:
+            env["PATCHRELAY_PARENT_TASK_ID"] = parent_task_id
+        env["PATCHRELAY_HANDOFF_DEPTH"] = str(getattr(record, "handoff_depth", 0))
+        return env
 
     async def _finalize_canceled(
         self,
