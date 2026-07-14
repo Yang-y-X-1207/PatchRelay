@@ -25,6 +25,12 @@ limits:
   max_log_bytes: 1048576
   max_diff_bytes: 5242880
   task_timeout_seconds: 3600
+  # Per-worker wall-clock ceiling, normally shorter than task_timeout_seconds. A
+  # single worker invocation that stalls (e.g. an occasional provider hang under
+  # high reasoning effort) is killed after this instead of burning the whole task
+  # budget. If the worker already left changes, the diff is preserved and the task
+  # lands in the soft "timed_out" state rather than "failed".
+  worker_timeout_seconds: 1800
   # Maximum number of handoff hops in a ping-pong chain (A->B->A...). Each child
   # task is one hop deeper than its parent; a handoff that would exceed this is
   # refused and the task completes normally, so a relay chain cannot loop forever.
